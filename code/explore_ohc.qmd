@@ -1,0 +1,518 @@
+---
+title: "MOM6 Subsurface Heatwaves"
+format: html
+toc: true
+toc_float: true
+toc-title: "Navigation"
+embed-resources: true
+editor: source
+knitr:
+  opts_chunk:
+    echo: FALSE
+---
+
+## Purpose
+
+Try to use MOM6 data to calculate subsurface heatwaves in the California Current, taking advantage of the new earthmover setup for data access.
+
+## Import Data
+
+```{r setup,include=F}
+library(rnaturalearth)
+library(tidyverse)
+library(sf)
+library(scales)
+library(terra)
+library(here)
+library(tidyterra)
+library(viridis)
+library(colorspace)
+library(tictoc)
+library(cowplot)
+
+theme_set(theme_minimal()+theme(panel.border = element_rect(color='black',fill=NA)))
+```
+
+Ocean heat content has been calculated separately in `calculate_ohc.R`. We calculated it across 3 depth bins: 0-250m, 250-500m, and 500-1000m depth
+
+```{r}
+ohc1 <- rast(here('output','ocean_heat_content_0_50_ts.tif')) |> rotate()
+ohc2 <- rast(here('output','ocean_heat_content_50_100_ts.tif')) |> rotate()
+ohc3 <- rast(here('output','ocean_heat_content_100_250_ts.tif')) |> rotate()
+ohc4 <- rast(here('output','ocean_heat_content_250_500_ts.tif')) |> rotate()
+ohc5 <- rast(here('output','ocean_heat_content_500_1000_ts.tif')) |> rotate()
+ohcl <- list(ohc1,ohc2,ohc3,ohc4,ohc5)
+```
+
+Background polygon
+
+```{r,warning=F}
+coast <- ne_states(country='United States of America',returnclass = 'sf') |> 
+  filter(name %in% c('California','Oregon','Washington','Nevada',"Idaho"))
+coastcn <- ne_countries(country="Canada",scale=50,returnclass='sf')
+
+coast <- st_union(coast,coastcn) |> 
+  summarise() |> 
+  st_transform(st_crs(ohc1)) |>
+  st_crop(st_bbox(ohc1))
+
+# eez
+eez <- read_sf(here('data','us_eez.shp')) |>
+  st_transform(st_crs(ohc1)) |> 
+  st_crop(st_bbox(ohc1))
+```
+
+
+## Calculate Anomalies
+
+Calculate a monthly climatology.
+
+```{r}
+ohc_climl <- map(ohcl,\(x) tapp(x,index='months',fun=mean))
+ohc_clim_sdl <- map(ohcl,\(x) tapp(x,index='months',fun=sd))
+```
+
+```{r}
+names(ohc_climl) <- c("0-50","50-100","100-250","250-500","500-1000")
+
+panel(ohc_climl[[1]],col=map.pal("bcyr"))
+panel(ohc_climl[[2]],col=map.pal("bcyr"))
+```
+
+
+Try counting anomalies from these climatologies. We define anomaly as a z-score anomaly, that is, we substract the mean and divide by the standard deviation.
+
+```{r}
+# split into months, subtract climatology, recombine
+# anoml2 <- map2(ohcl,ohc_climl, \(x,y) x - y)
+anoml <- pmap(list(ohcl,ohc_climl,ohc_clim_sdl), \(x,y,z) (x - y)/z)
+names(anoml) <- c("0-50","50-100","100-250","250-500","500-1000")
+# names(anom) <- time(anom)
+```
+
+And example slice of each raster, showing ocean heat content in June 2015.
+
+```{r}
+jun15.1 <- ggplot()+
+  geom_spatraster(data=anoml[[1]][[270]])+
+  geom_sf(data=coast,fill="tan")+
+  geom_sf(data=eez,fill=NA,color="black")+
+  scale_fill_continuous_diverging(palette = "Blue-Red 2", mid = 0,
+                                  na.value="gray90",limits=c(-3,3),oob=oob_squish) +
+  scale_x_continuous(expand=c(0,0))+
+  scale_y_continuous(expand=c(0,0))+
+  labs(title=paste0("Ocean Heat Content 0-50m\n",time(ohc1)[270]),
+       fill='Anomaly')
+jun15.2 <- ggplot()+
+  geom_spatraster(data=anoml[[2]][[270]])+
+  geom_sf(data=coast,fill="tan")+
+  geom_sf(data=eez,fill=NA,color="black")+
+  scale_fill_continuous_diverging(palette = "Blue-Red 2", mid = 0,
+                                  na.value="gray90",limits=c(-3,3),oob=oob_squish) +
+  scale_x_continuous(expand=c(0,0))+
+  scale_y_continuous(expand=c(0,0))+
+  labs(title=paste0("Ocean Heat Content 50-100m\n",time(ohc1)[270]),
+       fill='Anomaly')
+jun15.3 <- ggplot()+
+  geom_spatraster(data=anoml[[3]][[270]])+
+  geom_sf(data=coast,fill="tan")+
+  geom_sf(data=eez,fill=NA,color="black")+
+  scale_fill_continuous_diverging(palette = "Blue-Red 2", mid = 0,
+                                  na.value="gray90",limits=c(-3,3),oob=oob_squish) +
+  scale_x_continuous(expand=c(0,0))+
+  scale_y_continuous(expand=c(0,0))+
+  labs(title=paste0("Ocean Heat Content 100-250m\n",time(ohc1)[270]),
+       fill='Anomaly')
+jun15.4 <- ggplot()+
+  geom_spatraster(data=anoml[[4]][[270]])+
+  geom_sf(data=coast,fill="tan")+
+  geom_sf(data=eez,fill=NA,color="black")+
+  scale_fill_continuous_diverging(palette = "Blue-Red 2", mid = 0,
+                                  na.value="gray90",limits=c(-3,3),oob=oob_squish) +
+  scale_x_continuous(expand=c(0,0))+
+  scale_y_continuous(expand=c(0,0))+
+  labs(title=paste0("Ocean Heat Content 250-500m\n",time(ohc1)[270]),
+       fill='Anomaly')
+jun15.5 <- ggplot()+
+  geom_spatraster(data=anoml[[5]][[270]])+
+  geom_sf(data=coast,fill="tan")+
+  geom_sf(data=eez,fill=NA,color="black")+
+  scale_fill_continuous_diverging(palette = "Blue-Red 2", mid = 0,
+                                  na.value="gray90",limits=c(-3,3),oob=oob_squish) +
+  scale_x_continuous(expand=c(0,0))+
+  scale_y_continuous(expand=c(0,0))+
+  labs(title=paste0("Ocean Heat Content 500-1000m\n",time(ohc1)[270]),
+       fill='Anomaly')
+
+jun15p <- plot_grid(jun15.1,jun15.2,jun15.3,jun15.4,jun15.5,nrow=2)
+
+ggsave(here('plots','June 2015 anomaly.png'),jun15p,w=10)
+
+```
+
+Try plotting all months from 2013-2016 (the Blob).
+
+```{r}
+blobp_foo <- function(rstack){
+  names(rstack) <- time(rstack)
+  ggplot()+
+    geom_spatraster(data=rstack)+
+    geom_sf(data=coast,fill="tan",color=NA)+
+    geom_sf(data=eez,fill=NA,color='black',linetype=2)+
+    facet_wrap(~lyr,nrow=12,dir='v')+
+    scale_fill_continuous_diverging(palette = "Blue-Red 2",oob=oob_squish, mid = 0,
+                                    na.value='gray90',limits=c(-2,4))+
+    scale_x_continuous(expand=c(0,0))+
+    scale_y_continuous(expand=c(0,0))+
+    # scale_fill_continuous(palette=paldiv,oob=oob_squish,limits=c(-2.5,2.5))+
+    labs(title="Ocean Heat Content",
+         fill='Anomaly')+
+    theme(axis.text.x=element_blank(),axis.text.y=element_text(size=8))
+}
+
+times <- time(ohc2)
+ss <- which(year(times)%in%c(2013:2016))
+blobtl <- iwalk(anoml,\(x,y){
+  p <- blobp_foo(x[[ss]])
+  ggsave(here('plots',paste0('Blob OHC ts_',y,'.png')),p,h=24)
+})
+```
+
+## Detrending
+
+Let's make de-trended versions of the rasters, removing any linear effect of time on the anomalies. This will help us distinguish, e.g., short term deviations (heatwaves) from long-term warming.
+
+```{r}
+extract_trend <- function(rast_series, time_index=1:nlyr(rast_series)) {
+  t_idx <- time_index
+  
+  trend <- app(rast_series, function(x) {
+    if (all(is.na(x))) return(rep(NA, length(x)))
+    fit <- lm(x ~ t_idx)
+    return(fitted(fit))
+  })
+  
+  return(trend)
+}
+
+trendl <- map(anoml,extract_trend)
+detrendl <- map2(anoml,trendl,\(x,y) x-y)
+```
+
+## Anomaly timeseries
+
+Can we use this dataset to calculate a timeseries? First, a simple mean anomaly over time, averaging the anomaly values across all grid cells in a given time step and depth layer.
+
+```{r}
+timetbl <- tibble(date=time(ohc1)) |> 
+  mutate(year=year(date),month=month(date))
+
+# list of anomaly timeseries, for each depth bin
+anom_ts <- imap(anoml,\(x,i) {
+  global(x,c("mean","sd"),na.rm=T) |>
+    bind_cols(timetbl) |> 
+    mutate(upr=mean+1.96*sd,lwr=mean-1.96*sd,
+           depth_layer=i)
+  }) |> bind_rows()
+
+ohc_ts <- imap(ohcl,\(x,i){
+  global(x,c("mean","sd"),na.rm=T) |>
+    bind_cols(timetbl) |> 
+    mutate(upr=mean+1.96*sd,lwr=mean-1.96*sd,
+           depth_layer=i)
+}) |> bind_rows()
+
+
+p_anom_ts <- anom_ts |> 
+  mutate(depthcat=factor(depth_layer,levels=c("0-50","50-100","100-250","250-500","500-1000"))) |>
+  # filter(depth_layer==2) |>
+  # filter(year<2025) |> 
+  ggplot(aes(date,mean,ymin=lwr,ymax=upr,color=depthcat,
+             fill=depthcat))+
+  geom_ribbon(alpha=0.5,col=NA)+
+  geom_line()+
+  scale_fill_manual(values=viridis_pal(begin=0.3,end=0.7)(5))+
+  scale_color_manual(values=viridis_pal(begin=0.3,end=0.7)(5))+
+  geom_hline(yintercept=0,linetype=2)+
+  scale_x_date(date_breaks="3 years",date_labels="%Y")+
+  labs(x="Year",y="OHC Anomaly")+
+  guides(fill='none',col='none')+
+  facet_wrap(~depthcat,nrow=2)+
+  theme(axis.text.x=element_text(angle=45,hjust=1,vjust=1))
+p_anom_ts
+
+p_ohc_ts <- ohc_ts |> 
+  # filter(depth_layer==2) |>
+  # filter(year<2025) |> 
+  ggplot(aes(date,mean,ymin=lwr,ymax=upr,color=factor(depth_layer),
+             fill=factor(depth_layer)))+
+  geom_ribbon(alpha=0.5,col=NA)+
+  geom_line()+
+  scale_fill_manual(values=viridis_pal(begin=0.3,end=0.7)(3))+
+  scale_color_manual(values=viridis_pal(begin=0.3,end=0.7)(3))+
+  scale_x_date(date_breaks="3 years",date_labels="%Y")+
+  labs(x="Year",y="OHC",fill="Depth\nLayer",col="Depth\nLayer")+
+  facet_wrap(~factor(depth_layer),nrow=2,scales='free')+
+  theme(axis.text.x=element_text(angle=45,hjust=1,vjust=1))
+p_ohc_ts
+```
+
+## By Latitude
+
+We can also make time series by latitude bins, to assess any latitudinal differences in the timing or magnitude of ocean heat changes.
+
+```{r}
+# make latitude bin raster
+lat_rast <- anoml[[1]][[1]]  # Get one layer as template
+values(lat_rast) <- NA
+# Fill with latitude bin IDs
+lat_breaks <- seq(32, 50, by=2)  # 2° bins
+lat_labels <- paste(lat_breaks+1, "°N", sep = "")
+zonetbl <- tibble(minlat=lat_breaks,maxlat=lead(lat_breaks)) |> 
+                    mutate(zone=row_number())
+
+# assign latitude bin ids to each raster cell
+for (i in 1:nrow(lat_rast)) {
+  cell_lat <- yFromCell(lat_rast, cellFromRowCol(lat_rast, i,1))
+  bin_id <- cut(cell_lat, breaks=lat_breaks, labels=FALSE)
+  lat_rast[i, ] <- bin_id
+}
+```
+
+Use the latitude bin template raster and `terra::zonal()` to calculate latitude-bin means for all depth layers.
+
+```{r}
+# for each depth layer...
+ts_by_lat <- imap(anoml,\(x,idx){
+  # and for each time slice...
+  imap(1:nlyr(x), \(t,n) {
+    # ...calculate the mean anomaly value by latitude bin
+    ldf <- zonal(x[[t]], lat_rast, fun="mean",na.rm=T, as.data.frame=TRUE)
+    tibble(date=n,zone=ldf[,1],mean=ldf[,2])
+    }) |> bind_rows() |> 
+    mutate(depth_layer=idx)
+}) |> bind_rows() |> 
+  mutate(depthcat=factor(depth_layer,levels=c("0-50","50-100","100-250","250-500","500-1000")))
+
+# detrended version
+ts_by_lat_det <- imap(detrendl,\(x,idx){
+  imap(1:nlyr(x), \(t,n) {
+    ldf <- zonal(x[[t]], lat_rast, fun="mean",na.rm=T, as.data.frame=TRUE)
+    tibble(date=n,zone=ldf[,1],mean=ldf[,2])
+    }) |> bind_rows() |> 
+    mutate(depth_layer=idx)
+}) |> bind_rows() |> 
+  mutate(depthcat=factor(depth_layer,levels=c("0-50","50-100","100-250","250-500","500-1000")))
+```
+
+Plot the time series by latitude bin.
+
+```{r}
+p_ts_by_lat <- ts_by_lat |> 
+  mutate(date=timetbl$date[date]) |> 
+  mutate(latlab=lat_labels[zone]) |> 
+  ggplot(aes(x=date,color=latlab))+
+  geom_line(aes(y=mean))+
+  facet_wrap(~depthcat,nrow=5)+
+  geom_hline(yintercept=0,linetype=2)+
+  scale_color_manual(values=viridis_pal(option="G")(9))+
+  labs(x="Date",y="OHC Anomaly",color="Latitude\nBin")
+p_ts_by_lat
+
+# compare, e.g., around the southern california bight, around cape blanco, and around cape flaherty
+p_ts_by_lat2 <- ts_by_lat |>
+  filter(zone %in% c(1,6,9)) |>  
+  mutate(latlab=lat_labels[zone]) |>
+  mutate(date=timetbl$date[date]) |> 
+  ggplot(aes(x=date,color=latlab))+
+  geom_line(aes(y=mean))+
+  geom_vline(xintercept=as_date("1997-01-01"),linetype=2)+
+  geom_vline(xintercept=as_date("1999-01-01"),linetype=2)+
+  geom_vline(xintercept=as_date("2014-01-01"),linetype=2)+
+  geom_vline(xintercept=as_date("2017-01-01"),linetype=2)+
+  facet_wrap(~depthcat,nrow=5)+
+  geom_hline(yintercept=0,linetype=2)+
+  scale_color_manual(values=viridis_pal(end=0.7,option="G")(3))+
+  labs(x="Date",y="OHC Anomaly",color="Latitude\nBin",
+       title="Mean OHC Anomaly by Depth and Latitude")
+p_ts_by_lat2
+```
+
+De-trended time series
+
+```{r}
+p_ts_by_lat_det <- ts_by_lat_det |>
+  filter(zone %in% c(1,6,9)) |>  
+  mutate(latlab=lat_labels[zone]) |>
+  mutate(date=timetbl$date[date]) |> 
+  ggplot(aes(x=date,color=latlab))+
+  geom_line(aes(y=mean))+
+  geom_vline(xintercept=as_date("1997-01-01"),linetype=2)+
+  geom_vline(xintercept=as_date("1999-01-01"),linetype=2)+
+  geom_vline(xintercept=as_date("2014-01-01"),linetype=2)+
+  geom_vline(xintercept=as_date("2017-01-01"),linetype=2)+
+  facet_wrap(~depthcat,nrow=5)+
+  geom_hline(yintercept=0,linetype=2)+
+  scale_color_manual(values=viridis_pal(end=0.7,option="G")(3))+
+  labs(x="Date",y="OHC Anomaly",color="Latitude\nBin",
+       title="Mean OHC De-trended Anomaly by Depth and Latitude")
+p_ts_by_lat_det
+
+
+ggsave(here('plots','ohc_ts_lat.png'),p_ts_by_lat2,w=10)
+ggsave(here('plots','ohc_ts_lat_det.png'),p_ts_by_lat_det,w=10)
+```
+
+Hovmoller plots of this over time. These plots show the OHC time series by both time and latitude bin.
+
+```{r}
+ohc_hov <- ts_by_lat |>
+  mutate(latlab=lat_labels[zone]) |> 
+  mutate(date=timetbl$date[date]) |> 
+  ggplot(aes(date,latlab,fill=mean,col=mean))+
+  geom_tile()+
+  geom_vline(xintercept=as_date("1997-01-01"),linetype=2)+
+  geom_vline(xintercept=as_date("1999-01-01"),linetype=2)+
+  geom_vline(xintercept=as_date("2014-01-01"),linetype=2)+
+  geom_vline(xintercept=as_date("2017-01-01"),linetype=2)+
+  facet_wrap(~depthcat,nrow=5)+
+  # scale_fill_continuous(expand=c(0,0))+
+  scale_fill_continuous_diverging(palette = "Blue-Red 2", mid = 0)+
+  scale_color_continuous_diverging(palette = "Blue-Red 2", mid = 0)+
+  scale_y_discrete(expand=c(0,0))+
+  # scale_x_date(date_breaks="2 years",expand=c(0,0))+
+  scale_x_date(expand=c(0,0),date_breaks = "3 years",date_labels="%Y")+
+  labs(x="Time",y="Latitude",fill="Anomaly",color="Anomaly")
+
+ohc_hov_det <- ts_by_lat_det |>
+  mutate(latlab=lat_labels[zone]) |> 
+  mutate(date=timetbl$date[date]) |> 
+  ggplot(aes(date,latlab,fill=mean,col=mean))+
+  geom_tile()+
+  geom_vline(xintercept=as_date("1997-01-01"),linetype=2)+
+  geom_vline(xintercept=as_date("1999-01-01"),linetype=2)+
+  geom_vline(xintercept=as_date("2014-01-01"),linetype=2)+
+  geom_vline(xintercept=as_date("2017-01-01"),linetype=2)+
+  facet_wrap(~depthcat,nrow=5)+
+  # scale_fill_continuous(expand=c(0,0))+
+  scale_fill_continuous_diverging(palette = "Blue-Red 2", mid = 0)+
+  scale_color_continuous_diverging(palette = "Blue-Red 2", mid = 0)+
+  scale_y_discrete(expand=c(0,0))+
+  # scale_x_date(date_breaks="2 years",expand=c(0,0))+
+  scale_x_date(expand=c(0,0),date_breaks = "3 years",date_labels="%Y")+
+  labs(x="Time",y="Latitude",fill="Anomaly",color="Anomaly")
+
+ohc_hov
+ohc_hov_det
+
+ggsave(here('plots','ohc_hov.png'),ohc_hov,w=10)
+ggsave(here('plots','ohc_hov_det.png'),ohc_hov_det,w=10)
+```
+
+## Heatwave Area
+
+We can also calculate heatwave area. In our case, we'll define heatwave area as the total (summed) area of any grid cells in a given time step that have an anomaly value  greater than 1; that is, the total area greater than 1 SD above the long-term, monthly climatology.
+
+```{r}
+# terra calculates area correctly even with lat/lon coordinates,
+# so we can just pull the area of each raster cell (which is in meters)
+# and convert to sq. km
+rarea <- cellSize(anoml[[1]])/1e6
+
+calc_heatwave_area <- function(r,thresh=1){
+  # find the area of all cells in heatwave
+  rna <- ifel(r<thresh,NA,r)
+  out <- mask(rarea,rna)
+  global(out,sum,na.rm=T)
+}
+```
+
+```{r}
+heatwave_area_ts <- imap(anoml,\(x,y){
+  area <- sapply(x,calc_heatwave_area,thresh=1)
+  tibble(date=timetbl$date,area=unlist(area),
+         depth_layer=y)
+}) |> bind_rows()
+
+# de-trended version
+heatwave_area_detrend_ts <- imap(detrendl,\(x,y){
+  area <- sapply(x,calc_heatwave_area,thresh=1)
+  tibble(date=timetbl$date,area=unlist(area),
+         depth_layer=y)
+}) |> bind_rows()
+
+p_hw_area <- heatwave_area_ts |>
+  mutate(depthcat=factor(depth_layer,levels=c("0-50","50-100","100-250","250-500","500-1000"))) |> 
+  mutate(doy=yday(date),year=year(date)) |> 
+  # filter(year %in% c(1997,2014,2019,2020,2022,2023,2024,2025)) |> 
+  ggplot(aes(date,area/1e5,color=depthcat))+
+  scale_color_manual(values=viridis_pal(option="G",begin=0.2,end=0.8)(5))+
+  geom_line()+
+  geom_vline(xintercept=as_date("1997-01-01"),linetype=2)+
+  geom_vline(xintercept=as_date("1999-01-01"),linetype=2)+
+  geom_vline(xintercept=as_date("2014-01-01"),linetype=2)+
+  geom_vline(xintercept=as_date("2017-01-01"),linetype=2)+
+  facet_wrap(~depthcat,nrow=5,scales='free_y')+
+  guides(color='none')+
+  scale_x_date(expand=c(0,0),date_breaks = "3 years",date_labels="%Y")+
+  labs(x="Year",y=expression("Area in Heatwave Conditions (10"^"5" ~ "km"^"2"~")"),
+       color="Depth")
+
+p_hw_area_det <- heatwave_area_detrend_ts |>
+  mutate(depthcat=factor(depth_layer,levels=c("0-50","50-100","100-250","250-500","500-1000"))) |> 
+  mutate(doy=yday(date),year=year(date)) |> 
+  # filter(year %in% c(1997,2014,2019,2020,2022,2023,2024,2025)) |> 
+  ggplot(aes(date,area/1e5,color=depthcat))+
+  scale_color_manual(values=viridis_pal(option="G",begin=0.2,end=0.8)(5))+
+  geom_line()+
+  geom_vline(xintercept=as_date("1997-01-01"),linetype=2)+
+  geom_vline(xintercept=as_date("1999-01-01"),linetype=2)+
+  geom_vline(xintercept=as_date("2014-01-01"),linetype=2)+
+  geom_vline(xintercept=as_date("2017-01-01"),linetype=2)+
+  facet_wrap(~depthcat,nrow=5,scales='free_y')+
+  guides(color='none')+
+  scale_x_date(expand=c(0,0),date_breaks = "3 years",date_labels="%Y")+
+  labs(x="Year",y=expression("Area in Heatwave Conditions (10"^"5" ~ "km"^"2"~")"),
+       color="Depth")
+
+p_hw_area
+p_hw_area_det
+ggsave(here('plots','heatwave_area_ts.png'),p_hw_area,w=10)
+ggsave(here('plots','heatwave_area_ts_det.png'),p_hw_area_det,w=10)
+```
+
+## Testing
+
+Make this into a gif
+
+```{r}
+# make_mth <- function(rdat,lyri){
+#   rsub <- rdat[[lyri]]
+#   ggplot()+
+#     geom_spatraster(data=rsub)+
+#     geom_sf(data=coast,fill="tan")+
+#     geom_sf(data=eez,fill=NA,color="black")+
+#     scale_fill_continuous_diverging(palette = "Blue-Red 2", mid = 0,
+#                                     na.value="gray90") +
+#     scale_x_continuous(expand=c(0,0))+
+#     scale_y_continuous(expand=c(0,0))+
+#     labs(title=paste0("Ocean heat content\n",names(rsub)),fill='Anomaly (GJ)')
+# }
+# 
+# walk2(ss,names(anoml[[1]][[ss]]),\(x,idx) {
+#   p <- make_mth(rdat=anoml,lyri=x)
+#   ggsave(here('plots','anom_ohc',paste0(idx,".png")),p,w=6,h=5)
+# })
+```
+
+
+```{r}
+# library(magick)
+# pngs <- list.files(here('plots','anom_ohc'),pattern = "\\.png$", full.names = TRUE)
+# frames <- image_read(pngs)
+# 
+# # Combine into a GIF and save
+# animation <- image_animate(frames, fps = 1)  # adjust fps as needed
+# image_write(animation, here('plots',"anom_ohc_Blob.gif"))
+```
+

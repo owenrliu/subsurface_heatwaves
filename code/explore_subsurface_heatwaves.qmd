@@ -1,0 +1,628 @@
+---
+title: "MOM6 Subsurface Heatwaves"
+format: html
+toc: true
+toc_float: true
+toc-title: "Navigation"
+embed-resources: true
+editor: source
+knitr:
+  opts_chunk:
+    echo: FALSE
+---
+
+## Purpose
+
+Try to use MOM6 data to calculate subsurface heatwaves in the California Current, taking advantage of the new earthmover setup for data access.
+
+## Import Data
+
+```{r setup,include=F}
+# Lazily load the entire dataset
+library(rnaturalearth)
+library(ncdf4)
+library(tidyverse)
+library(sf)
+library(scales)
+library(terra)
+library(here)
+library(tidyterra)
+library(viridis)
+library(colorspace)
+library(tictoc)
+
+theme_set(theme_minimal()+theme(panel.border = element_rect(color='black',fill=NA)))
+```
+
+Here is the URL for the monthly earthmover hindcast
+
+```{r}
+url <- "https://compute.earthmover.io/v1/services/dap2/NOAA-PMEL/cefi-nep-hindcast-monthly/main/regrid/main/opendap"
+ds <- nc_open(url)
+```
+
+## Metadata
+
+Calculate some useful reference tables for the dataset and set our study area
+
+```{r lookups}
+# variable names as a table with definitions
+vardefs <- map(names(ds$var),\(x){
+  ncatt_get(ds,x) |> 
+    as_tibble() |> 
+    mutate(varname=x)
+}) |> bind_rows()
+# ncdf dimensions as a list of indexed lookup tables
+dims <- imap(ds$dim, \(x,n){
+  tibble(value=c(x$vals),name=n,units=x$units) |> 
+    mutate(index=row_number())
+}) |> set_names(names(ds$dim))
+
+# time index
+timetbl <- dims$time |> 
+  mutate(date=as.Date(value,origin="1993-01-01")) |> 
+  mutate(month=month(date),year=year(date))
+range(timetbl$date)
+print(paste(nrow(timetbl),"months of data."))
+
+# depths for each layer
+dims$z_l |> 
+  ggplot(aes(index,value))+geom_col()+
+  labs(x="depth layer",y="depth (m)")
+# grabbing the first 36 depth layers gets us down to 1000m
+```
+## Define US EEZ
+
+We want to restrict our study area to the US EEZ.
+
+```{r}
+eez <- read_sf(here('data','us_west_coast_eez.shp'))
+
+st_bbox(eez)
+
+```
+
+Define the study box and make a template raster extent.
+
+```{r domain}
+# define a study area bounding box
+latmin <- 32
+latmax <- 48.5
+lonmin <- 230
+lonmax <- 244
+
+# indices
+lons <- dims$lon |> filter(value >= lonmin, value <= lonmax)
+lats <- dims$lat |> filter(value >= latmin, value <= latmax)
+# subsets of lats/lons
+lon_sub <- pull(lons,value)
+lat_sub <- pull(lats,value)
+# indexes
+lon_idx <-  pull(lons,index)
+lat_idx <- pull(lats,index)
+# counts
+lon_count <- length(lon_sub)
+lat_count=length(lat_sub)
+
+# a raster extent covering this box, for later plotting
+rext <- ext(min(lon_sub), max(lon_sub), min(lat_sub), max(lat_sub))
+```
+
+## Choosing Isopycnals
+
+Because pressure/density at depth can obfuscate some effects of changing temperatures, we want to try to track these heatwaves along isopycnals, that is, surfaces of common density. For now, we need to decide on a common subsurface isopycnal. Later, we can try our calculations for other isopycnals.
+
+MOM6 has a potential density variable:
+
+```{r}
+vardefs[grepl("density",vardefs$long_name),]
+```
+Let's extract some density data and look for common isopycnals. This function extracts one time-step from the given ncdf, but extracts data across all `min_zind:max_zind` depth indices.
+
+```{r}
+get_3Dslice <- function(ncurl=url,varname,tidx,min_zind=1,max_zind=36){
+  nc <- nc_open(ncurl)
+  tic("pulling variable")
+  out <- ncvar_get(
+    nc,
+    varid=varname,
+    # xyzt (time is last dimension)
+    start=c(min(lon_idx),min(lat_idx),min_zind,tidx),
+    count=c(lon_count,lat_count,length(min_zind:max_zind),1)
+  )
+  toc()
+  nc_close(nc)
+  out
+}
+```
+
+Try this for an arbitrary time slice.
+
+```{r}
+test <- get_3Dslice(ncurl=url,varname="thetao",tidx=101)
+# find the mean pressure at each depth slice
+testprof <- apply(test,3,mean,na.rm=T)
+tibble(depth=dims$z_l$value[1:36],density=testprof) |> 
+  ggplot(aes(depth,density))+geom_line()+coord_flip()+
+  scale_x_reverse()
+```
+
+Let's do this for a number of time slices, then find the average density at each depth level (again, just to pick some reasonable isopycnals to track)
+
+```{r}
+# set.seed(1234)
+# use 2013 as example year
+# tsamp <- sample(dims$time$index,size = 20,replace=F)
+tsamp <- timetbl |> filter(year==2013) |> pull(index)
+testl <- map(tsamp, \(x) get_3Dslice(ncurl=url,varname="rhopot0",tidx=x))
+testl <- simplify2array(testl)
+# find the mean pressure at each depth slice and month
+profmean <- apply(testl,c(3,4),mean,na.rm=T)
+profsd <- apply(testl,c(3,4),sd,na.rm=T)
+profmin <- apply(testl,c(3,4),min,na.rm=T)
+profmax <- apply(testl,c(3,4),max,na.rm=T)
+profq95 <-apply(testl,c(3,4),quantile,probs=c(0.95),na.rm=T)
+profq05<-apply(testl,c(3,4),quantile,probs=c(0.05),na.rm=T)
+
+profdf <- crossing(month=1:12,
+                   depth=dims$z_l$value[1:36]) |> 
+  mutate(density=c(profmean),
+         sd=c(profsd),
+         min=c(profmin),
+         max=c(profmax),
+         q05=c(profq05),
+         q95=c(profq95),
+         upr=density+sd,lwr=density-sd) 
+
+profdf |> 
+  mutate(month=as.factor(month)) |> 
+  ggplot(aes(color=month))+
+  scale_color_manual(values=viridis_pal()(12))+
+  # geom_ribbon(aes(depth,density,ymin=lwr,ymax=upr),
+  #             fill=viridis_pal()(10)[4],col=NA,alpha=0.5)+
+  geom_line(aes(depth,density))+
+  geom_line(aes(depth,q95),linetype=2)+
+  geom_line(aes(depth,q05),linetype=2)+
+  coord_flip()+
+  scale_x_reverse()
+```
+
+For now, choose 1025.5 kg/m^3 and 1026.5 kg/m^3 as our reference isopycnals, often associated with depths between ~50-250m. The other useful thing from this plot is that it suggests we never need to extract data deeper than 250m for this purpose.
+
+```{r}
+tgt1 <- 1025.5
+tgt2 <- 1026.5
+```
+
+## Calculating Isopycnal Temperature
+
+Because the dataset is organized by depth layers (not isopycnals), we need to calculate this in a few steps for each time step in the data:
+
+1. Find the depth layers from a potential density field that most closely match the target density
+2. Extract from the temperature field at those depths
+
+The primary bottleneck in the processing is the accessing and downloading of the original data. Without overtaxing my computer, I think we could do the isopycnal calculation on a year of data at a time, rather than by month. This should speed up the overall workflow time because there are fewer unique index calls to the dataset.
+
+
+```{r}
+calc_isopyc_yr <- function(ncurl=url,yr,target_rho=tgt1,min_zind=1,max_zind=24,rast=F){
+  
+  # find time indices
+  ti <- timetbl |> filter(year==yr) |> pull(index)
+  tstart <- min(ti)
+  tcount <- length(ti)
+  tic(paste("Calculating isopycnals for",yr,"starting at index",tstart))
+  # get density
+  tic(paste("Pulling",length(min_zind:max_zind),"depth slices"))
+  
+  nc <- nc_open(ncurl)
+  
+  rhopot <- ncvar_get(
+    nc,
+    varid="rhopot0",
+    # xyzt (time is last dimension)
+    start=c(min(lon_idx),min(lat_idx),min_zind,tstart),
+    # grab a year of data
+    count=c(lon_count,lat_count,length(min_zind:max_zind),tcount)
+  )
+  toc()
+  
+  # get temperature
+  tic(paste("Pulling",length(min_zind:max_zind),"temperature slices"))
+  thetao <- ncvar_get(
+    nc,
+    varid="thetao",
+    # xyzt (time is last dimension)
+    start=c(min(lon_idx),min(lat_idx),min_zind,tstart),
+    count=c(lon_count,lat_count,length(min_zind:max_zind),tcount)
+  )
+  toc()
+  
+  nc_close(nc)
+  
+  # find which depths are closest to the target density
+  # tic("Calculating isopycnal")
+  rhodiff <- abs(rhopot-target_rho)
+  # rhodiff[rhodiff>0.2] <- NA
+  # 
+  # # how many depth layers are within 0.2 density units?
+  # test <- apply(rhodiff,c(1,2,4), function(x) {
+  #   sum(!is.na(x))
+  # })
+  
+  rhowhich <- apply(rhodiff,c(1,2,4), function(x) {
+    ifelse(!all(is.na(x)), which.min(x), NA_integer_)
+  })
+  
+  # extract temperature at those depths
+  dvals <- dims$z_l$value[min_zind:max_zind]
+  tic("Extracting temperature along isopycnal")
+  nt <- dim(rhopot)[4] # times (should be 12 months in a year)
+  ni <- dim(rhopot)[1] # lons
+  nj <- dim(rhopot)[2] # lats
+  
+  # arrays to hold temperature (d) and depth (z) of isopycnal
+  d <- array(NA,dim=c(ni,nj,nt))
+  z <- array(NA,dim=c(ni,nj,nt))
+  
+  # for every month
+  for (t in 1:nt) {
+    for (i in 1:ni) {
+      for(j in 1:nj) {
+        # matching depth layer
+        k <- unlist(rhowhich[i, j, t])
+        # depth of isopycnal
+        z[i,j,t] <- dvals[k]
+        # temperature of isopycnal
+        d[i, j, t] <- thetao[i, j, k, t]
+      }
+    }
+  }
+  toc()
+  toc()
+  # format into a raster?
+  if(rast){
+    rdl <- map(1:nt, \(x) {
+      di <- d[,,x]
+      t(di)[rev(seq_len(nj)),] |> 
+      rast(
+        extent = rext,
+        crs = "EPSG:4326")
+    })
+    rzl <- map(1:nt, \(x) {
+      zi <- z[,,x]
+      t(zi)[rev(seq_len(nj)),] |> 
+      rast(
+        extent = rext,
+        crs = "EPSG:4326")
+      })
+    rd <- rast(rdl)
+    names(rd) <- paste0(yr,"_",1:nt)
+    rz <- rast(rzl)
+    names(rz) <- paste0(yr,"_",1:nt)
+    return(list("temp"=rd,"depth"=rz))
+    
+  } else return(list("temp"=d,"depth"=z))
+}
+calc_isopyc_yr <- insistently(calc_isopyc_yr,rate = rate_delay(pause=5,max_times=10))
+```
+
+```{r}
+iso26.5 <- calc_isopyc_yr(ncurl=url,yr=2001,target_rho=1026.5,min_zind=1,max_zind=32,rast=T)
+iso25.5 <- calc_isopyc_yr(ncurl=url,yr=2001,target_rho=1025.5,min_zind=1,max_zind=32,rast=T)
+```
+
+Apply to all timesteps!
+
+```{r}
+tic("Calculating isopycnal 1025.5 for entire dataset")
+
+yrvec <- unique(timetbl$year)
+
+isop1025.5 <- map(yrvec,\(x){
+  calc_isopyc_yr(ncurl=url,yr=x,target_rho=1025.5,min_zind=1,max_zind=32,rast=T)
+})
+
+# for(i in 1:length(yrvec)){
+#   isop <- calc_isopyc_yr(ncurl=url,yr=yrvec[i],target_rho=1025.5,min_zind=1,max_zind=32,rast=T)
+#   isop1025.5_t[[i]] <- isop[["temp"]]
+#   isop1025.5_d[[i]] <- isop[["depth"]]
+# }
+
+toc()
+```
+
+```{r}
+tic("Calculating isopycnal 1026.5 for entire dataset")
+
+isop1026.5 <- map(yrvec,\(x){
+  calc_isopyc_yr(ncurl=url,yr=x,target_rho=1025.5,min_zind=1,max_zind=32,rast=T)
+})
+
+toc()
+```
+
+Save
+
+```{r}
+out_rt1 <- rast(isop1025.5 |> map(\(x) x[["temp"]]))
+out_rt2 <- rast(isop1026.5 |> map(\(x) x[["temp"]]))
+out_rz1 <- rast(isop1025.5 |> map(\(x) x[["depth"]]))
+out_rz2 <- rast(isop1026.5 |> map(\(x) x[["depth"]]))
+
+time(out_rt1) <- time(out_rt2) <- time(out_rz1) <- time(out_rz2) <- timetbl$date
+
+writeRaster(out_rt1,here('output','isopycnal_1025.5_temp.tif'),overwrite=T)
+writeRaster(out_rz1,here('output','isopycnal_1025.5_depth.tif'),overwrite=T)
+writeRaster(out_rt2,here('output','isopycnal_1026.5_temp.tif'),overwrite=T)
+writeRaster(out_rz2,here('output','isopycnal_1026.5_depth.tif'),overwrite=T)
+```
+
+## Calculate Anomalies
+
+```{r}
+isopt <- rast(here('output','isopycnal_1026.5_temp.tif'))
+isopz <- rast(here('output','isopycnal_1026.5_depth.tif'))
+```
+
+Calculate a monthly climatology.
+
+```{r}
+isopt_clim <- tapp(isopt,index='months',fun=mean)
+isopz_clim <- tapp(isopz,index='months',fun=mean)
+panel(isopt_clim,col=map.pal("magma"))
+panel(isopz_clim,col=map.pal("viridis"))
+```
+
+Try counting anomalies from these climatologies
+
+```{r}
+paldiv <- diverging_hcl(n = 50,h2=0,palette = "Blue Red 2")
+paldiv2 <- divergingx_hcl(n= 50,h2=0,palette="Cividis")
+```
+
+```{r}
+# split into months, subtract climatology, recombine
+anomt <- isopt - isopt_clim
+anomz <- isopz - isopz_clim
+
+names(anomt) <- time(anomt)
+names(anomz) <- time(anomz)
+
+ggplot()+
+  geom_spatraster(data=anomt[[270]])+
+  scale_fill_continuous(palette=paldiv)+
+  labs(title="1026.5 isopycnal",
+       fill='temperature (anomaly)')
+ggplot()+
+  geom_spatraster(data=anomz[[270]])+
+  scale_fill_continuous(palette=paldiv2)+
+  labs(title="Depth of 1026.5 isopycnal",
+       fill='Depth (anomaly)')
+```
+
+Try plotting all months from 2013-2016
+
+```{r}
+ss <- timetbl |> filter(year %in% c(2013:2016)) |> pull(index)
+blobt <- anomt[[ss]]
+names(blobt)<-time(blobt)
+blobpanel <- ggplot()+
+  geom_spatraster(data=blobt)+
+  facet_wrap(~lyr,nrow=12,dir='v')+
+  scale_fill_continuous(palette=paldiv,oob=oob_squish,limits=c(-2.5,2.5))+
+  labs(title="1026.5 isopycnal",
+       fill='temperature\nanomaly')
+ggsave(here('plots','Blob temperature timeseries.png'),blobpanel,h=18)
+```
+```{r}
+# blobz <- anomz[[ss]]
+blobz <- isopz[[ss]]
+names(blobz)<-time(blobz)
+blobpanel <- ggplot()+
+  geom_spatraster(data=blobz)+
+  facet_wrap(~lyr,nrow=12,dir='v')+
+  scale_fill_viridis(direction = -1)+
+  # scale_fill_continuous(palette=paldiv)+
+  labs(title="1026.5 isopycnal",
+       fill='depth')
+ggsave(here('plots','Blob depth timeseries.png'),blobpanel,h=18)
+```
+
+Make this into a gif
+
+```{r}
+make_mth <- function(lyri){
+  rsub <- anomt[[lyri]]
+  ggplot()+
+    geom_spatraster(data=rsub)+
+    scale_fill_continuous(palette=paldiv,oob=oob_squish,limits=c(-2.5,2.5))+
+    # theme(legend.position=c(0.8,0.8))+
+    labs(title=paste0("1026.5 isopycnal\n",names(rsub)),fill='temperature\nanomaly')
+}
+
+walk2(ss,names(anomt[[ss]]),\(x,idx) {
+  p <- make_mth(x)
+  ggsave(here('plots','anomt',paste0(idx,".png")),p,w=6,h=5)
+})
+
+```
+
+
+```{r}
+library(magick)
+pngs <- list.files(here('plots','anomt'),pattern = "\\.png$", full.names = TRUE)
+
+frames <- image_read(pngs)
+
+# Combine into a GIF and save
+animation <- image_animate(frames, fps = 1)  # adjust fps as needed
+image_write(animation, here('plots',"anomt_Blob_1026.5.gif"))
+```
+
+## Anomaly timeseries
+
+Can we use this dataset to calculate a timeseries? First, a simple mean anomaly over time
+
+```{r}
+anomt_ts <- global(anomt,c("mean","sd"),na.rm=T) |> bind_cols(timetbl) |> 
+  mutate(upr=mean+1.96*sd,lwr=mean-1.96*sd)
+anomz_ts <- global(anomz,c("mean","sd"),na.rm=T) |> bind_cols(timetbl) |> 
+  mutate(upr=mean+1.96*sd,lwr=mean-1.96*sd)
+# and just normal depth
+z_ts <- global(isopz,c("mean","sd"),na.rm=T) |> bind_cols(timetbl) |> 
+  mutate(upr=mean+1.96*sd,lwr=mean-1.96*sd)
+
+p_anomt_ts <- anomt_ts |> 
+  filter(year<2025) |> 
+  ggplot(aes(date,mean,ymin=lwr,ymax=upr))+
+  geom_ribbon(fill=viridis_pal()(10)[4],col=NA)+
+  geom_line()+
+  geom_hline(yintercept=0,linetype=2)+
+  scale_x_date(date_breaks="2 years",date_labels="%Y")+
+  labs(x="Year",y="Mean Temperature Anomaly\non the 1025.5 isopycnal")
+p_anomt_ts
+
+p_anomz_ts <- anomz_ts |> 
+  ggplot(aes(date,mean,ymin=lwr,ymax=upr))+
+  geom_ribbon(fill=viridis_pal()(10)[4],col=NA)+
+  geom_line()+
+  geom_hline(yintercept=0,linetype=2)+
+  scale_x_date(date_breaks="2 years",date_labels="%Y")+
+  labs(x="Year",y="Mean Depth Anomaly\nof the 1025.5 isopycnal")
+p_anomz_ts
+
+p_z_ts <- z_ts |> 
+  filter(year<2025) |> 
+  ggplot(aes(date,mean,ymin=lwr,ymax=upr))+
+  geom_ribbon(fill=viridis_pal()(10)[4],col=NA)+
+  geom_line()+
+  geom_hline(yintercept=0,linetype=2)+
+  scale_x_date(date_breaks="2 years",date_labels="%Y")+
+  labs(x="Year",y="Mean Depth \nnof the 1025.5 isopycnal")
+p_z_ts
+```
+
+Try to make a timeseries by latitude bins
+```{r}
+# make latitude bin raster
+lat_rast <- anomt[[1]]  # Get one layer as template
+values(lat_rast) <- NA
+# Fill with latitude bin IDs
+lat_breaks <- seq(32, 50, by=2)  # 2° bins
+zonetbl <- tibble(minlat=lat_breaks,maxlat=lead(lat_breaks)) |> 
+                    mutate(zone=row_number())
+
+for (i in 1:nrow(lat_rast)) {
+  cell_lat <- yFromCell(lat_rast, cellFromRowCol(lat_rast, i,1))
+  bin_id <- cut(cell_lat, breaks=lat_breaks, labels=FALSE)
+  lat_rast[i, ] <- bin_id
+}
+
+# Now use zonal to get mean temperature per bin per time layer
+ts_by_lat <- imap(1:nlyr(anomt), \(t,n) {
+  ldf <- zonal(anomt[[t]], lat_rast, fun="mean",na.rm=T, as.data.frame=TRUE)
+  sddf <- zonal(anomt[[t]], lat_rast, fun="mean",na.rm=T, as.data.frame=TRUE)
+  q05df <- zonal(anomt[[t]], lat_rast, fun="quantile",probs=c(0.05),na.rm=T, as.data.frame=TRUE)
+  q95df <- zonal(anomt[[t]], lat_rast, fun="quantile",probs=c(0.95),na.rm=T, as.data.frame=TRUE)
+  tibble(date=n,zone=ldf[,1],
+         mean=ldf[,2],
+         sd=sddf[,2],
+         q05=q05df[,2],
+         q95=q95df[,2])
+}) |> bind_rows()
+
+```
+
+```{r}
+p_ts_by_lat <- ts_by_lat |> 
+  mutate(date=timetbl$date[date]) |> 
+  ggplot(aes(x=date,color=as.factor(zone)))+
+  geom_line(aes(y=mean))+
+  # geom_line(aes(y=q05))+
+  # geom_line(aes(y=q95))+
+  labs(x="Date",y="Temperature Anomaly",color="Latitude\nBin")
+p_ts_by_lat
+
+# compare, e.g., around the southern california bight, around cape blanco, and around cape flaherty
+p_ts_by_lat2 <- ts_by_lat |>
+  filter(zone %in% c(1,6,9)) |> 
+  mutate(date=timetbl$date[date]) |> 
+  ggplot(aes(x=date,color=as.factor(zone)))+
+  geom_line(aes(y=mean))+
+  # geom_line(aes(y=q05))+
+  # geom_line(aes(y=q95))+
+  labs(x="Date",y="Temperature Anomaly",color="Latitude\nBin")
+p_ts_by_lat2
+```
+
+## Heatwave Area
+
+```{r}
+# use terra::patches to measure areas of features
+# for now, define heatwave as temperature > 1 deg above mean
+# project to equal area
+anomtproj <- project(anomt,"EPSG:5070")
+rarea <- cellSize(anomtproj)/1e6
+
+calc_heatwave_area <- function(r){
+  # find the area of all cells in heatwave
+  rna <- ifel(r<1,NA,r)
+  out <- mask(rarea,rna)
+  global(out,sum,na.rm=T)
+}
+```
+
+```{r}
+# apply to our raster
+heatwave_area_ts <- sapply(anomtproj,calc_heatwave_area)
+heatwave_area_ts_df <- tibble(date=timetbl$date,area=unlist(heatwave_area_ts)) |> 
+  mutate(area=coalesce(area,0)) |> 
+  mutate(doy=yday(date),year=year(date))
+p_hw_area <- heatwave_area_ts_df |>
+  filter(year %in% c(1997,2014,2019,2020,2022,2023,2024,2025)) |> 
+  ggplot(aes(doy,area,color=factor(year)))+geom_line()
+p_hw_area
+```
+
+
+## Testing
+
+For a whole year
+```{r}
+ncurl=url;yr=2015;target_rho=tgt1;min_zind=1;max_zind=32;
+```
+
+
+```{r}
+testr <- calc_isopyc_yr(yr=2015,rast=T)
+ggplot()+
+  geom_spatraster(data=testr$temp[[1]])+
+  scale_fill_viridis(option="B",na.value=NA)+
+  labs(title="1025.5 isopycnal",
+       fill='temperature')
+ggplot()+
+  geom_spatraster(data=testr$depth[[1]])+
+  scale_fill_viridis(option="E",na.value=NA,direction=-1)+
+  labs(title="Depth of 1025.5 isopycnal",
+       fill='Depth')
+```
+
+```{r}
+result_yr <- calc_isopyc_yr(yr=2015, min_zind=1, max_zind=24, rast=FALSE)
+result_single <- calc_isopyc(tidx=265, min_zind=1, max_zind=24, rast=FALSE)
+
+# For month 1 of the year:
+all.equal(result_yr$temp[,,1], result_single$temp)
+all.equal(result_yr$depth[,,1], result_single$depth)
+```
+
+```{r}
+maker <- function(m){
+  t(m)[rev(seq_len(dim(m)[2])),] |> 
+      rast(
+        extent = rext,
+        crs = "EPSG:4326")
+}
+```
+

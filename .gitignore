@@ -6,6 +6,11 @@
 .RData
 .RDataTmp
 
+# other large data files
+*.nc
+*.gif
+/data
+
 # User-specific files
 .Ruserdata
 
