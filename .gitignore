@@ -9,6 +9,7 @@
 # other large data files
 *.nc
 *.gif
+*.tif
 /data
 
 # User-specific files

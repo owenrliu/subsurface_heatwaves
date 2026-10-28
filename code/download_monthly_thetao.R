@@ -50,6 +50,8 @@ lat_count=length(lat_sub)
 rext <- ext(min(lon_sub), max(lon_sub), min(lat_sub), max(lat_sub))
 
 # convenience function to reshape a time-slice and make it into a raster
+# this flips and transposes a matrix that pops out of the .nc file
+# to make it the right shape for a raster
 maker <- function(m){
   t(m)[rev(seq_len(dim(m)[2])),] |> 
     rast(
@@ -57,7 +59,8 @@ maker <- function(m){
       crs = "EPSG:4326")
 }
 
-# download function
+# download function for the bounding box defined above, for a year of data,
+# across depth levels min_zind:max_zind
 download_nc_yr <- function(ncurl=url,yr,min_zind=1,max_zind=36){ # 0-1000m default
   # find time indices
   ti <- timetbl |> filter(year==yr) |> pull(index)

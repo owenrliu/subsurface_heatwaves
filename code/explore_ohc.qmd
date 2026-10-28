@@ -29,19 +29,21 @@ library(viridis)
 library(colorspace)
 library(tictoc)
 library(cowplot)
+library(corrplot)
 
 theme_set(theme_minimal()+theme(panel.border = element_rect(color='black',fill=NA)))
 ```
 
-Ocean heat content has been calculated separately in `calculate_ohc.R`. We calculated it across 3 depth bins: 0-250m, 250-500m, and 500-1000m depth
+Ocean heat content has been calculated separately in `calculate_ohc.R`. We calculated it across a bunch of depth bins: 0-5m, 0-50m, 50-100m, 100-250m, 250-500m, and 500-1000m depth.
 
 ```{r}
-ohc1 <- rast(here('output','ocean_heat_content_0_50_ts.tif')) |> rotate()
-ohc2 <- rast(here('output','ocean_heat_content_50_100_ts.tif')) |> rotate()
-ohc3 <- rast(here('output','ocean_heat_content_100_250_ts.tif')) |> rotate()
-ohc4 <- rast(here('output','ocean_heat_content_250_500_ts.tif')) |> rotate()
-ohc5 <- rast(here('output','ocean_heat_content_500_1000_ts.tif')) |> rotate()
-ohcl <- list(ohc1,ohc2,ohc3,ohc4,ohc5)
+ohc1 <- rast(here('output','ocean_heat_content_0_5_ts.tif')) |> rotate()
+ohc2 <- rast(here('output','ocean_heat_content_0_50_ts.tif')) |> rotate()
+ohc3 <- rast(here('output','ocean_heat_content_50_100_ts.tif')) |> rotate()
+ohc4 <- rast(here('output','ocean_heat_content_100_250_ts.tif')) |> rotate()
+ohc5 <- rast(here('output','ocean_heat_content_250_500_ts.tif')) |> rotate()
+ohc6 <- rast(here('output','ocean_heat_content_500_1000_ts.tif')) |> rotate()
+ohcl <- list(ohc1,ohc2,ohc3,ohc4,ohc5,ohc6)
 ```
 
 Background polygon
@@ -60,25 +62,25 @@ coast <- st_union(coast,coastcn) |>
 eez <- read_sf(here('data','us_eez.shp')) |>
   st_transform(st_crs(ohc1)) |> 
   st_crop(st_bbox(ohc1))
+
 ```
 
 
 ## Calculate Anomalies
 
-Calculate a monthly climatology.
+Calculate a monthly climatology. Crop everything to the eez
 
 ```{r}
-ohc_climl <- map(ohcl,\(x) tapp(x,index='months',fun=mean))
-ohc_clim_sdl <- map(ohcl,\(x) tapp(x,index='months',fun=sd))
+ohc_climl <- map(ohcl,\(x) tapp(x,index='months',fun=mean) |> mask(vect(eez)))
+ohc_clim_sdl <- map(ohcl,\(x) tapp(x,index='months',fun=sd) |> mask(vect(eez)))
 ```
 
 ```{r}
-names(ohc_climl) <- c("0-50","50-100","100-250","250-500","500-1000")
+names(ohc_climl) <- c("0-5","0-50","50-100","100-250","250-500","500-1000")
 
 panel(ohc_climl[[1]],col=map.pal("bcyr"))
 panel(ohc_climl[[2]],col=map.pal("bcyr"))
 ```
-
 
 Try counting anomalies from these climatologies. We define anomaly as a z-score anomaly, that is, we substract the mean and divide by the standard deviation.
 
@@ -86,7 +88,7 @@ Try counting anomalies from these climatologies. We define anomaly as a z-score 
 # split into months, subtract climatology, recombine
 # anoml2 <- map2(ohcl,ohc_climl, \(x,y) x - y)
 anoml <- pmap(list(ohcl,ohc_climl,ohc_clim_sdl), \(x,y,z) (x - y)/z)
-names(anoml) <- c("0-50","50-100","100-250","250-500","500-1000")
+names(anoml) <- c("0-5","0-50","50-100","100-250","250-500","500-1000")
 # names(anom) <- time(anom)
 ```
 
@@ -101,7 +103,7 @@ jun15.1 <- ggplot()+
                                   na.value="gray90",limits=c(-3,3),oob=oob_squish) +
   scale_x_continuous(expand=c(0,0))+
   scale_y_continuous(expand=c(0,0))+
-  labs(title=paste0("Ocean Heat Content 0-50m\n",time(ohc1)[270]),
+  labs(title=paste0("Ocean Heat Content 0-5m\n",time(ohc1)[270]),
        fill='Anomaly')
 jun15.2 <- ggplot()+
   geom_spatraster(data=anoml[[2]][[270]])+
@@ -111,7 +113,7 @@ jun15.2 <- ggplot()+
                                   na.value="gray90",limits=c(-3,3),oob=oob_squish) +
   scale_x_continuous(expand=c(0,0))+
   scale_y_continuous(expand=c(0,0))+
-  labs(title=paste0("Ocean Heat Content 50-100m\n",time(ohc1)[270]),
+  labs(title=paste0("Ocean Heat Content 0-50m\n",time(ohc1)[270]),
        fill='Anomaly')
 jun15.3 <- ggplot()+
   geom_spatraster(data=anoml[[3]][[270]])+
@@ -121,7 +123,7 @@ jun15.3 <- ggplot()+
                                   na.value="gray90",limits=c(-3,3),oob=oob_squish) +
   scale_x_continuous(expand=c(0,0))+
   scale_y_continuous(expand=c(0,0))+
-  labs(title=paste0("Ocean Heat Content 100-250m\n",time(ohc1)[270]),
+  labs(title=paste0("Ocean Heat Content 50-100m\n",time(ohc1)[270]),
        fill='Anomaly')
 jun15.4 <- ggplot()+
   geom_spatraster(data=anoml[[4]][[270]])+
@@ -131,7 +133,7 @@ jun15.4 <- ggplot()+
                                   na.value="gray90",limits=c(-3,3),oob=oob_squish) +
   scale_x_continuous(expand=c(0,0))+
   scale_y_continuous(expand=c(0,0))+
-  labs(title=paste0("Ocean Heat Content 250-500m\n",time(ohc1)[270]),
+  labs(title=paste0("Ocean Heat Content 100-250m\n",time(ohc1)[270]),
        fill='Anomaly')
 jun15.5 <- ggplot()+
   geom_spatraster(data=anoml[[5]][[270]])+
@@ -141,10 +143,20 @@ jun15.5 <- ggplot()+
                                   na.value="gray90",limits=c(-3,3),oob=oob_squish) +
   scale_x_continuous(expand=c(0,0))+
   scale_y_continuous(expand=c(0,0))+
+  labs(title=paste0("Ocean Heat Content 250-500m\n",time(ohc1)[270]),
+       fill='Anomaly')
+jun15.6 <- ggplot()+
+  geom_spatraster(data=anoml[[6]][[270]])+
+  geom_sf(data=coast,fill="tan")+
+  geom_sf(data=eez,fill=NA,color="black")+
+  scale_fill_continuous_diverging(palette = "Blue-Red 2", mid = 0,
+                                  na.value="gray90",limits=c(-3,3),oob=oob_squish) +
+  scale_x_continuous(expand=c(0,0))+
+  scale_y_continuous(expand=c(0,0))+
   labs(title=paste0("Ocean Heat Content 500-1000m\n",time(ohc1)[270]),
        fill='Anomaly')
 
-jun15p <- plot_grid(jun15.1,jun15.2,jun15.3,jun15.4,jun15.5,nrow=2)
+jun15p <- plot_grid(jun15.1,jun15.2,jun15.3,jun15.4,jun15.5,jun15.6,nrow=2)
 
 ggsave(here('plots','June 2015 anomaly.png'),jun15p,w=10)
 
@@ -199,6 +211,22 @@ trendl <- map(anoml,extract_trend)
 detrendl <- map2(anoml,trendl,\(x,y) x-y)
 ```
 
+```{r}
+# not just the fitted values-- what are the spatial time trends?
+extract_trend_coef <- function(rast_series, time_index=1:nlyr(rast_series)) {
+  t_idx <- time_index
+  
+  trend <- app(rast_series, function(x) {
+    if (all(is.na(x))) return(NA)
+    fit <- lm(x ~ t_idx)
+    return(coef(fit)[2])
+  })
+  
+  return(trend)
+}
+test <- map(anoml,extract_trend_coef)
+```
+
 ## Anomaly timeseries
 
 Can we use this dataset to calculate a timeseries? First, a simple mean anomaly over time, averaging the anomaly values across all grid cells in a given time step and depth layer.
@@ -224,15 +252,15 @@ ohc_ts <- imap(ohcl,\(x,i){
 
 
 p_anom_ts <- anom_ts |> 
-  mutate(depthcat=factor(depth_layer,levels=c("0-50","50-100","100-250","250-500","500-1000"))) |>
+  mutate(depthcat=factor(depth_layer,levels=c("0-5","0-50","50-100","100-250","250-500","500-1000"))) |>
   # filter(depth_layer==2) |>
   # filter(year<2025) |> 
   ggplot(aes(date,mean,ymin=lwr,ymax=upr,color=depthcat,
              fill=depthcat))+
   geom_ribbon(alpha=0.5,col=NA)+
   geom_line()+
-  scale_fill_manual(values=viridis_pal(begin=0.3,end=0.7)(5))+
-  scale_color_manual(values=viridis_pal(begin=0.3,end=0.7)(5))+
+  scale_fill_manual(values=viridis_pal(begin=0.3,end=0.7)(6))+
+  scale_color_manual(values=viridis_pal(begin=0.3,end=0.7)(6))+
   geom_hline(yintercept=0,linetype=2)+
   scale_x_date(date_breaks="3 years",date_labels="%Y")+
   labs(x="Year",y="OHC Anomaly")+
@@ -248,8 +276,8 @@ p_ohc_ts <- ohc_ts |>
              fill=factor(depth_layer)))+
   geom_ribbon(alpha=0.5,col=NA)+
   geom_line()+
-  scale_fill_manual(values=viridis_pal(begin=0.3,end=0.7)(3))+
-  scale_color_manual(values=viridis_pal(begin=0.3,end=0.7)(3))+
+  scale_fill_manual(values=viridis_pal(begin=0.3,end=0.7)(6))+
+  scale_color_manual(values=viridis_pal(begin=0.3,end=0.7)(6))+
   scale_x_date(date_breaks="3 years",date_labels="%Y")+
   labs(x="Year",y="OHC",fill="Depth\nLayer",col="Depth\nLayer")+
   facet_wrap(~factor(depth_layer),nrow=2,scales='free')+
@@ -279,6 +307,25 @@ for (i in 1:nrow(lat_rast)) {
 }
 ```
 
+Or by HCI regions
+
+```{r}
+# Fill with latitude bin IDs
+hci_breaks <- c(30, 35.5,40,43.5,48)  # 2° bins
+hci_labels <- paste(hci_breaks, "°N", sep = "")
+hcitbl <- tibble(minlat=hci_breaks,maxlat=lead(hci_breaks)) |> 
+                    mutate(hci_region=c(5:1))
+
+# assign bin ids to each raster cell
+hci_rast <- anoml[[1]][[1]]  # Get one layer as template
+for (i in 1:nrow(hci_rast)) {
+  cell_lat <- yFromCell(hci_rast, cellFromRowCol(hci_rast, i,1))
+  bin_id <- cut(cell_lat, breaks=hci_breaks)
+  hci_rast[i, ] <- bin_id
+}
+hci_rast <- 5-hci_rast # swap the order of the HCI regions
+```
+
 Use the latitude bin template raster and `terra::zonal()` to calculate latitude-bin means for all depth layers.
 
 ```{r}
@@ -292,7 +339,7 @@ ts_by_lat <- imap(anoml,\(x,idx){
     }) |> bind_rows() |> 
     mutate(depth_layer=idx)
 }) |> bind_rows() |> 
-  mutate(depthcat=factor(depth_layer,levels=c("0-50","50-100","100-250","250-500","500-1000")))
+  mutate(depthcat=factor(depth_layer,levels=c("0-5","0-50","50-100","100-250","250-500","500-1000")))
 
 # detrended version
 ts_by_lat_det <- imap(detrendl,\(x,idx){
@@ -302,7 +349,7 @@ ts_by_lat_det <- imap(detrendl,\(x,idx){
     }) |> bind_rows() |> 
     mutate(depth_layer=idx)
 }) |> bind_rows() |> 
-  mutate(depthcat=factor(depth_layer,levels=c("0-50","50-100","100-250","250-500","500-1000")))
+  mutate(depthcat=factor(depth_layer,levels=c("0-5","0-50","50-100","100-250","250-500","500-1000")))
 ```
 
 Plot the time series by latitude bin.
@@ -321,7 +368,7 @@ p_ts_by_lat
 
 # compare, e.g., around the southern california bight, around cape blanco, and around cape flaherty
 p_ts_by_lat2 <- ts_by_lat |>
-  filter(zone %in% c(1,6,9)) |>  
+  filter(zone %in% c(1,6,8)) |>  
   mutate(latlab=lat_labels[zone]) |>
   mutate(date=timetbl$date[date]) |> 
   ggplot(aes(x=date,color=latlab))+
@@ -359,8 +406,8 @@ p_ts_by_lat_det <- ts_by_lat_det |>
 p_ts_by_lat_det
 
 
-ggsave(here('plots','ohc_ts_lat.png'),p_ts_by_lat2,w=10)
-ggsave(here('plots','ohc_ts_lat_det.png'),p_ts_by_lat_det,w=10)
+ggsave(here('plots','ohc_ts_lat.png'),p_ts_by_lat2,w=8,h=10)
+ggsave(here('plots','ohc_ts_lat_det.png'),p_ts_by_lat_det,w=8,h=10)
 ```
 
 Hovmoller plots of this over time. These plots show the OHC time series by both time and latitude bin.
@@ -405,8 +452,142 @@ ohc_hov_det <- ts_by_lat_det |>
 ohc_hov
 ohc_hov_det
 
-ggsave(here('plots','ohc_hov.png'),ohc_hov,w=10)
-ggsave(here('plots','ohc_hov_det.png'),ohc_hov_det,w=10)
+ggsave(here('plots','ohc_hov.png'),ohc_hov,w=8,h=10)
+ggsave(here('plots','ohc_hov_det.png'),ohc_hov_det,w=8,h=10)
+```
+
+## By HCI Region
+
+Use the HCI template raster and `terra::zonal()` to calculate HCI-region means for all depth layers.
+
+```{r}
+# for each depth layer...
+ts_by_hci <- imap(anoml,\(x,idx){
+  # and for each time slice...
+  imap(1:nlyr(x), \(t,n) {
+    # ...calculate the mean anomaly value by latitude bin
+    ldf <- zonal(x[[t]], hci_rast, fun="mean",na.rm=T, as.data.frame=TRUE)
+    tibble(date=n,zone=ldf[,1],mean=ldf[,2])
+    }) |> bind_rows() |> 
+    mutate(depth_layer=idx)
+}) |> bind_rows() |> 
+  mutate(depthcat=factor(depth_layer,levels=c("0-5","0-50","50-100","100-250","250-500","500-1000")))
+
+# detrended version
+ts_by_hci_det <- imap(detrendl,\(x,idx){
+  imap(1:nlyr(x), \(t,n) {
+    ldf <- zonal(x[[t]], hci_rast, fun="mean",na.rm=T, as.data.frame=TRUE)
+    tibble(date=n,zone=ldf[,1],mean=ldf[,2])
+    }) |> bind_rows() |> 
+    mutate(depth_layer=idx)
+}) |> bind_rows() |> 
+  mutate(depthcat=factor(depth_layer,levels=c("0-5","0-50","50-100","100-250","250-500","500-1000")))
+```
+
+Plot the time series by latitude bin.
+
+```{r}
+hci_labels <- c("Region 1","Region 2","Region 3","Region 4")
+p_ts_by_hci <- ts_by_hci |> 
+  mutate(date=timetbl$date[date]) |> 
+  mutate(latlab=hci_labels[zone]) |> 
+  ggplot(aes(x=date,color=latlab))+
+  geom_line(aes(y=mean))+
+  facet_wrap(~depthcat,nrow=3,scales='free_y')+
+  geom_hline(yintercept=0,linetype=2)+
+  scale_color_manual(values=viridis_pal(option="G",end=0.8)(4))+
+  labs(x="Date",y="OHC Anomaly",color="HCI Region")
+p_ts_by_hci
+
+
+ggsave(here('plots','ohc_ts_hci.png'),p_ts_by_hci,w=10,h=7)
+```
+
+De-trended time series
+
+```{r}
+p_ts_by_hci_det <- ts_by_hci_det |>
+  mutate(latlab=hci_labels[zone]) |>
+  mutate(date=timetbl$date[date]) |> 
+  ggplot(aes(x=date,color=latlab))+
+  geom_line(aes(y=mean))+
+  geom_vline(xintercept=as_date("1997-01-01"),linetype=2)+
+  geom_vline(xintercept=as_date("1999-01-01"),linetype=2)+
+  geom_vline(xintercept=as_date("2014-01-01"),linetype=2)+
+  geom_vline(xintercept=as_date("2017-01-01"),linetype=2)+
+  facet_wrap(~depthcat,nrow=5)+
+  geom_hline(yintercept=0,linetype=2)+
+  scale_color_manual(values=viridis_pal(end=0.7,option="G")(4))+
+  labs(x="Date",y="OHC Anomaly",color="HCI Region",
+       title="Mean OHC De-trended Anomaly by Depth and Latitude")
+p_ts_by_hci_det
+
+ggsave(here('plots','ohc_ts_hci.png'),p_ts_by_hci,w=10,h=7)
+```
+
+### Correlations
+
+Correlations of this time series among regions and depths.
+
+```{r}
+# make into wide form
+ts_hci_wide <- ts_by_hci |>
+  mutate(series = paste(zone, depth_layer, sep = "|")) |>
+  group_by(date, series) |>
+  summarise(value = mean(mean, na.rm = TRUE), .groups = "drop") |>  # guards against duplicate dates
+  pivot_wider(names_from = series, values_from = value) |>
+  arrange(date)
+
+# function to test correlations, with adjustment for effective sample size
+pair_cor <- function(x, y) {
+  ok <- complete.cases(x, y); x <- x[ok]; y <- y[ok]; n <- length(x)
+  r   <- cor(x, y)
+  r1x <- acf(x, lag.max = 1, plot = FALSE)$acf[2]
+  r1y <- acf(y, lag.max = 1, plot = FALSE)$acf[2]
+  neff <- n * (1 - r1x * r1y) / (1 + r1x * r1y)
+  neff <- min(max(neff, 3.1), n)
+  t <- r * sqrt((neff - 2) / (1 - r^2))
+  tibble(r = r, n = n, neff = neff, p = 2 * pt(-abs(t), neff - 2))
+}
+
+series <- setdiff(names(ts_hci_wide), "date")
+
+# for every combination of zone and depth, calculate correlations
+cors <- combn(series, 2, simplify = FALSE) |>
+  map_dfr(\(p) bind_cols(a = p[1], b = p[2], pair_cor(ts_hci_wide[[p[1]]], ts_hci_wide[[p[2]]]))) |>
+  separate(a, c("zone_a", "depth_a"), sep = "\\|") |>
+  separate(b, c("zone_b", "depth_b"), sep = "\\|") |>
+  mutate(comparison = case_when(
+    depth_a == depth_b & zone_a != zone_b ~ "zones within depth layer",
+    zone_a  == zone_b  & depth_a != depth_b ~ "depth layers within zone",
+    TRUE ~ "both differ"))
+
+# adjustment for multiple comparison
+cors <- cors |>
+  group_by(comparison) |>
+  mutate(p_adj = p.adjust(p, method = "BH")) |>
+  ungroup()
+```
+
+
+Make a plot of the correlations
+
+```{r}
+cm <- cor(ts_hci_wide[series], use = "pairwise.complete.obs")
+# ordered by region and depth
+corrplot::corrplot(cm, method = "color", order = "alphabet", tl.cex = 0.6)
+
+# clustered for easier viewing
+corrplot::corrplot(cm, method = "color", order = "hclust", tl.cex = 0.6)
+
+# 2. Open the PNG graphics device
+png(filename = here('plots',"ohc_hci_regions_corrplot.png"), 
+    width = 1800, 
+    height = 1800, 
+    res = 300,        # High resolution (300 DPI) for print
+    type = "cairo")   # Ensures sharp labels and smooth lines
+corrplot::corrplot(cm, method = "color", order = "hclust", tl.cex = 0.6)
+dev.off()
 ```
 
 ## Heatwave Area
@@ -422,9 +603,18 @@ rarea <- cellSize(anoml[[1]])/1e6
 calc_heatwave_area <- function(r,thresh=1){
   # find the area of all cells in heatwave
   rna <- ifel(r<thresh,NA,r)
-  out <- mask(rarea,rna)
-  global(out,sum,na.rm=T)
+  expanse(rna,unit='km') |> pull(area)
 }
+
+# Total area key (for calculating percent of region)
+tot_areas_z <- map_dbl(anoml,\(x){
+  expanse(x[[1]]) |> pull(area)
+})/1e6 # convert to sq. km
+tot_area_df <- tibble(layer=names(tot_areas_z),totarea=tot_areas_z)
+tot_area_df |> 
+  mutate(layer=factor(layer,levels=names(tot_areas_z))) |> 
+  ggplot(aes(layer,totarea))+geom_col()+
+  labs(y="Total Area (sq. km)",x="Depth Layer")
 ```
 
 ```{r}
@@ -442,11 +632,11 @@ heatwave_area_detrend_ts <- imap(detrendl,\(x,y){
 }) |> bind_rows()
 
 p_hw_area <- heatwave_area_ts |>
-  mutate(depthcat=factor(depth_layer,levels=c("0-50","50-100","100-250","250-500","500-1000"))) |> 
+  mutate(depthcat=factor(depth_layer,levels=c("0-5","0-50","50-100","100-250","250-500","500-1000"))) |> 
   mutate(doy=yday(date),year=year(date)) |> 
   # filter(year %in% c(1997,2014,2019,2020,2022,2023,2024,2025)) |> 
   ggplot(aes(date,area/1e5,color=depthcat))+
-  scale_color_manual(values=viridis_pal(option="G",begin=0.2,end=0.8)(5))+
+  scale_color_manual(values=viridis_pal(option="G",begin=0.2,end=0.8)(6))+
   geom_line()+
   geom_vline(xintercept=as_date("1997-01-01"),linetype=2)+
   geom_vline(xintercept=as_date("1999-01-01"),linetype=2)+
@@ -459,11 +649,11 @@ p_hw_area <- heatwave_area_ts |>
        color="Depth")
 
 p_hw_area_det <- heatwave_area_detrend_ts |>
-  mutate(depthcat=factor(depth_layer,levels=c("0-50","50-100","100-250","250-500","500-1000"))) |> 
+  mutate(depthcat=factor(depth_layer,levels=c("0-5","0-50","50-100","100-250","250-500","500-1000"))) |> 
   mutate(doy=yday(date),year=year(date)) |> 
   # filter(year %in% c(1997,2014,2019,2020,2022,2023,2024,2025)) |> 
   ggplot(aes(date,area/1e5,color=depthcat))+
-  scale_color_manual(values=viridis_pal(option="G",begin=0.2,end=0.8)(5))+
+  scale_color_manual(values=viridis_pal(option="G",begin=0.2,end=0.8)(6))+
   geom_line()+
   geom_vline(xintercept=as_date("1997-01-01"),linetype=2)+
   geom_vline(xintercept=as_date("1999-01-01"),linetype=2)+
@@ -475,10 +665,375 @@ p_hw_area_det <- heatwave_area_detrend_ts |>
   labs(x="Year",y=expression("Area in Heatwave Conditions (10"^"5" ~ "km"^"2"~")"),
        color="Depth")
 
+# calculate proportion of EEZ covered
+heatwave_area_ts <- heatwave_area_ts |> 
+  left_join(tot_area_df,by=join_by(depth_layer==layer)) |> 
+  mutate(prop=area/totarea)
+
+p_hw_area_prop <- heatwave_area_ts |>
+  mutate(depthcat=factor(depth_layer,levels=c("0-5","0-50","50-100","100-250","250-500","500-1000"))) |> 
+  mutate(doy=yday(date),year=year(date)) |> 
+  # filter(year %in% c(1997,2014,2019,2020,2022,2023,2024,2025)) |> 
+  ggplot(aes(date,prop,color=depthcat))+
+  scale_color_manual(values=viridis_pal(option="G",begin=0.2,end=0.8)(6))+
+  geom_line()+
+  geom_vline(xintercept=as_date("1997-01-01"),linetype=2)+
+  geom_vline(xintercept=as_date("1999-01-01"),linetype=2)+
+  geom_vline(xintercept=as_date("2014-01-01"),linetype=2)+
+  geom_vline(xintercept=as_date("2017-01-01"),linetype=2)+
+  facet_wrap(~depthcat,nrow=5,scales='free_y')+
+  guides(color='none')+
+  scale_x_date(expand=c(0,0),date_breaks = "3 years",date_labels="%Y")+
+  labs(x="Year",y=expression("Proportion in Heatwave Conditions"),
+       color="Depth")
+
 p_hw_area
 p_hw_area_det
-ggsave(here('plots','heatwave_area_ts.png'),p_hw_area,w=10)
-ggsave(here('plots','heatwave_area_ts_det.png'),p_hw_area_det,w=10)
+ggsave(here('plots','heatwave_area_ts.png'),p_hw_area,w=8,h=10)
+ggsave(here('plots','heatwave_area_ts_det.png'),p_hw_area_det,w=8,h=10)
+
+p_hw_area_prop
+ggsave(here('plots','heatwave_prop_area_ts.png'),p_hw_area_prop,w=10,h=7)
+```
+
+## Consistent Spatial Pattern
+
+Find areas that consistently are affected by heatwave conditions, in total and by month. First we look at frequency- how many months did each pixel exceed the threshold of 1SD above the climatological mean?
+
+```{r}
+# find the frequency that each cell exceeds threshold
+threshold= 1
+hwfreqtot <- map(anoml,\(x){
+  out <- app(x,\(y) sum(y>threshold,na.rm=T))
+  ifel(out<=0,NA,out)
+})
+hwfreqmonth <- map(anoml,\(x){
+  out <- tapp(x,"months",\(y) sum(y>threshold,na.rm=T))
+  ifel(out<=0,NA,out)
+})
+```
+
+Total months in heatwave conditions, across the entire dataset, for each depth layer
+
+```{r}
+p_hwfreq1 <- imap(hwfreqtot,\(x,i){
+  ggplot()+
+    geom_spatraster(data=x)+
+    geom_sf(data=coast,fill="tan")+
+    geom_sf(data=eez,fill=NA,color="black")+
+    scale_fill_viridis(option="turbo",limits=c(40,80),oob=oob_squish)+
+    scale_x_continuous(expand=c(0,0))+
+    scale_y_continuous(expand=c(0,0))+
+    labs(title=paste0("Heatwave Frequency\n",i),
+         fill='Months over\nthreshold')
+})
+
+pg_hwfreq1 <- plot_grid(plotlist=p_hwfreq1,nrow=2)
+ggsave(here('plots','spatial heatwave frequency.png'),pg_hwfreq1,w=10)
+```
+
+Same as above, but calculated by month. For each month, calculate the number of years in heatwave conditions for each pixel.
+
+```{r}
+p_hwfreq2 <- map(hwfreqmonth,\(x){
+  ggplot()+
+    geom_spatraster(data=x)+
+    geom_sf(data=coast,fill="tan")+
+    facet_wrap(~lyr)+
+    geom_sf(data=eez,fill=NA,color="black")+
+    scale_fill_viridis(option="turbo")+
+    scale_x_continuous(expand=c(0,0))+
+    scale_y_continuous(expand=c(0,0))+
+    labs(title="Heatwave Frequency",
+         fill='Years exceeding \nthreshold')
+})
+
+walk(p_hwfreq2, plot)
+```
+
+We can define hotspots as anywhere that has repeatedly had heatwaves
+
+```{r}
+hotspots <- map(hwfreqmonth,\(x) x>5)
+
+p_hotspots <-map(hotspots,\(x){
+  ggplot()+
+    geom_spatraster(data=x)+
+    geom_sf(data=coast,fill="tan")+
+    facet_wrap(~lyr)+
+    geom_sf(data=eez,fill=NA,color="black")+
+    scale_fill_manual(values=c("gray80","#e33f0e"))+
+    scale_x_continuous(expand=c(0,0))+
+    scale_y_continuous(expand=c(0,0))+
+    labs(title="Areas experiencing frequent heatwaves",
+         fill='')
+})
+walk(p_hotspots,plot)
+```
+
+Conversely, we can define coolspots as anywhere that has NOT had many heatwaves
+
+```{r}
+coldspots <- map(hwfreqmonth,\(x) x<=3)
+
+p_coldspots <-map(coldspots,\(x){
+  ggplot()+
+    geom_spatraster(data=x)+
+    geom_sf(data=coast,fill="tan")+
+    facet_wrap(~lyr)+
+    geom_sf(data=eez,fill=NA,color="black")+
+    scale_fill_manual(values=c("gray80","blue"))+
+    scale_x_continuous(expand=c(0,0))+
+    scale_y_continuous(expand=c(0,0))+
+    labs(title="Areas experiencing < 3 heatwaves",
+         fill='')
+})
+walk(p_coldspots,plot)
+```
+
+What if we only count positive anomalies (heatwave intensity)? This calculates the accumulated sum (across years) of all positive anomalies in each pixel.
+
+```{r}
+hwinttot <- map(anoml,\(x){
+  out <- app(x,\(y) sum(pmax(0,y),na.rm=T))
+  ifel(out<=0,NA,out)
+})
+hwintmonth <- map(anoml,\(x){
+  out <- tapp(x,"months",\(y) sum(pmax(0,y),na.rm=T))
+  ifel(out<=0,NA,out)
+})
+```
+
+```{r,fig.height=8}
+p_hwint2 <- map(hwintmonth,\(x){
+  ggplot()+
+    geom_spatraster(data=x)+
+    geom_sf(data=coast,fill="tan")+
+    facet_wrap(~lyr)+
+    geom_sf(data=eez,fill=NA,color="black")+
+    scale_fill_viridis(option="turbo")+
+    scale_x_continuous(expand=c(0,0))+
+    scale_y_continuous(expand=c(0,0))+
+    labs(title="Heatwave Accumulated Intensity",
+         fill='Sum of positive\nanomalies')
+})
+
+walk(p_hwint2, plot)
+```
+
+Areas with sustained heatwaves (consecutive months exceeding threshold)
+
+```{r}
+threshold=1 # threshold for heatwave conditions (in anomaly space, so 1SD)
+duration_threshold=4 # number of consecutive months needed to call it a heatwave
+consecutive_heatwaves <- map(anoml,\(x){
+  out <- app(x, \(y) {
+    # Find indices where x > threshold
+    is_hw <- y > threshold
+    
+    # Calculate run lengths of TRUE values
+    runs <- rle(is_hw)
+    
+    # Count number of runs lasting > 3 months (sustained heatwaves)
+    persistent <- sum(runs$lengths[runs$values] > duration_threshold, na.rm = TRUE)
+    
+    return(persistent)
+  })
+  out
+  # ifel(out <= 0,NA,out)
+})
+```
+
+```{r,fig.width=10}
+p_hwsus1 <- ggplot()+
+  geom_spatraster(data=rast(consecutive_heatwaves))+
+  geom_sf(data=coast,fill="tan")+
+  facet_wrap(~lyr)+
+  geom_sf(data=eez,fill=NA,color="black")+
+  scale_fill_viridis(option='turbo',breaks=seq(0,10,by=2),oob=oob_squish)+
+  scale_x_continuous(expand=c(0,0))+
+  scale_y_continuous(expand=c(0,0))+
+  labs(title="Areas with sustained heatwaves\nlasting >4 consecutive months",
+       fill='Number of Heatwaves')+
+  theme(axis.text.x=element_blank())
+p_hwsus1
+```
+
+## Breakpoint Analysis
+
+Using the time series of OHC anomalies, test for breakpoints. Here's a general function to test all plausible breakpoint months using 3 different possible breakpoint models: a piecewise but continuous linear, a discontinuous linear, or a mean shift.
+
+```{r}
+# df has columns with time index (tidx) and y (value of interest)
+fit_break <- function(depthcat, type = c("mean", "trend_disc", "trend_cont"), trim = 0.15) {
+  type <- match.arg(type)
+  
+  df <- anom_ts |> 
+    filter(depth_layer==depthcat) |> 
+    arrange(date) |> 
+    mutate(tidx=row_number(),y=mean)
+  
+  tx  <- sort(unique(df$tidx))
+  n    <- length(tx)
+  
+  # keep >= trim of data per side
+  cand <- tx[ceiling(trim * n):floor((1 - trim) * n)]  
+  
+  # fit model for all possible breakpoints
+  mk <- function(bp) switch(type,
+    mean       = lm(y ~ I(tidx > bp), data = df),
+    trend_disc = lm(y ~ tidx * I(tidx > bp), data = df),
+    trend_cont = lm(y ~ tidx + pmax(tidx - bp, 0), data = df))
+
+  fits <- lapply(cand, mk)
+  rss  <- vapply(fits, deviance, numeric(1))
+  best <- which.min(rss)
+
+  # Approximate 95% CI for the breakpoint: candidates whose RSS is not
+  # significantly worse than the best (likelihood-ratio style)
+  lr  <- nrow(df) * log(rss / rss[best])
+  ci  <- range(cand[lr <= qchisq(0.95, 1)])
+  
+  fit = fits[[best]]
+  bp = cand[[best]]
+  
+  bplab <- df$date[which(df$tidx==bp)]
+  # plot the output
+  p <- df |> 
+    mutate(pred=predict(fit)) |>
+    mutate(group=ifelse(tidx<=bp,"Before","After")) |> 
+    ggplot(aes(x=date))+
+    geom_line(aes(y=pred,color=group),linetype=2,linewidth = 1.5)+
+    geom_line(aes(y=mean))+
+    guides(color='none')+
+    labs(title=paste("Breakpoint:",bplab,"\n",paste0(depthcat,"m")),color="",y="OHC Anomaly")
+
+  
+  out <- list(bp = cand[best], ci = ci, fit = fits[[best]],
+       profile = data.frame(bp = cand, rss = rss), type = type,
+       plot=p)
+  out
+  
+}
+```
+
+Using the top (surface) depth layer, test the breakpoint calculations.
+
+```{r}
+# test a mean shift
+res <- fit_break(depthcat = "0-5", type="mean")
+res$bp; res$ci
+summary(res$fit)
+# Was the breakpoint well-identified?  check for a sharp vs. flat minimum on the RSS plot
+plot(res$profile, type = "l") 
+
+res$plot
+```
+
+Test a continuous linear with one breakpoint
+
+```{r}
+res <- fit_break(depthcat = "0-5", type="trend_cont")
+res$bp; res$ci
+summary(res$fit)
+# Was the breakpoint well-identified?  check for a sharp vs. flat minimum on the RSS plot
+plot(res$profile, type = "l") 
+
+res$plot
+```
+And finally, a piecewise, discontinuous linear
+
+```{r}
+res <- fit_break(depthcat = "0-5", type="trend_disc")
+res$bp; res$ci
+summary(res$fit)
+# Was the breakpoint well-identified?  check for a sharp vs. flat minimum on the RSS plot
+plot(res$profile, type = "l") 
+
+res$plot
+```
+
+Really interesting that both the mean shift and the discontinous linear identify February, 2014 as the month of the "regime shift" into the new MHW era.
+
+Let's try this for all the depth layers, using the discontinuous linear.
+
+```{r}
+bp_all <- map(names(anoml),\(x){
+  fit_break(depthcat = x, type="trend_disc")
+})
+p_bp <- map(bp_all,\(y) y$plot)
+
+cowplot::plot_grid(plotlist=p_bp,nrow=2)
+
+ggsave(here('plots','breakpoint_analysis.png'),cowplot::plot_grid(plotlist=p_bp,nrow=2),w=10,h=7)
+```
+
+We can try to do the same breakpoint analysis with the area-normalized time series.
+
+```{r}
+fit_break_area <- function(depthcat, type = c("mean", "trend_disc", "trend_cont"), trim = 0.15) {
+  type <- match.arg(type)
+  
+  df <- heatwave_area_ts |> 
+    filter(depth_layer==depthcat) |> 
+    arrange(date) |> 
+    mutate(tidx=row_number(),y=prop)
+  
+  tx  <- sort(unique(df$tidx))
+  n    <- length(tx)
+  
+  # keep >= trim of data per side
+  cand <- tx[ceiling(trim * n):floor((1 - trim) * n)]  
+  
+  # fit model for all possible breakpoints
+  mk <- function(bp) switch(type,
+    mean       = lm(y ~ I(tidx > bp), data = df),
+    trend_disc = lm(y ~ tidx * I(tidx > bp), data = df),
+    trend_cont = lm(y ~ tidx + pmax(tidx - bp, 0), data = df))
+
+  fits <- lapply(cand, mk)
+  rss  <- vapply(fits, deviance, numeric(1))
+  best <- which.min(rss)
+
+  # Approximate 95% CI for the breakpoint: candidates whose RSS is not
+  # significantly worse than the best (likelihood-ratio style)
+  lr  <- nrow(df) * log(rss / rss[best])
+  ci  <- range(cand[lr <= qchisq(0.95, 1)])
+  
+  fit = fits[[best]]
+  bp = cand[[best]]
+  
+  bplab <- df$date[which(df$tidx==bp)]
+  # plot the output
+  p <- df |> 
+    mutate(pred=predict(fit)) |>
+    mutate(group=ifelse(tidx<=bp,"Before","After")) |> 
+    ggplot(aes(x=date))+
+    geom_line(aes(y=pred,color=group),linetype=2,linewidth = 1.5)+
+    geom_line(aes(y=prop))+
+    guides(color='none')+
+    labs(title=paste("Breakpoint:",bplab,"\n",paste0(depthcat,"m")),color="",y="Propotion in Heatwave Conditions")
+
+  
+  out <- list(bp = cand[best], ci = ci, fit = fits[[best]],
+       profile = data.frame(bp = cand, rss = rss), type = type,
+       plot=p)
+  out
+  
+}
+```
+
+Run a mean-shift breakpoint analysis on the area time series
+
+```{r}
+bp_area_all <- map(names(anoml),\(x){
+  fit_break_area(depthcat = x, type="mean")
+})
+p_bp_area <- map(bp_area_all,\(y) y$plot)
+
+cowplot::plot_grid(plotlist=p_bp_area,nrow=2)
+
+ggsave(here('plots','breakpoint_analysis_area.png'),cowplot::plot_grid(plotlist=p_bp_area,nrow=2),w=10,h=7)
 ```
 
 ## Testing

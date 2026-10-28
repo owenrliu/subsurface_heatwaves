@@ -84,9 +84,19 @@ make_ohc <- function(tprof,rho=1026,cp=3990,minz=0,maxz=250){
 
 test <- sds(fl[1])
 ohcts <- map(test,\(x) app(x,make_ohc,minz=0,maxz=250))
+ohcts2 <- map(test,\(x) app(x,make_ohc,minz=0,maxz=250,rho=1022))
+
 
 # Calculate this across all years
-# 0-50m
+# 0-5m (top 5m)
+ohcl_z_0_5 <- map(fl,\(x){
+  tic(x)
+  dat <- sds(x)
+  ml <- map(dat,\(d) app(d,make_ohc,minz=0,maxz=5))
+  toc()
+  rast(ml)
+}) |> rast()
+
 ohcl_z_0_50 <- map(fl,\(x){
   tic(x)
   dat <- sds(x)
@@ -135,8 +145,9 @@ ohcl_z_500_1000 <- map(fl,\(x){
 timetbl <- ncdims$time |> 
   mutate(date=as.Date(value,origin="1993-01-01")) |> 
   mutate(month=month(date),year=year(date))
-time(ohcl_z_0_50) <- time(ohcl_z_50_100) <- time(ohcl_z_100_250) <- time(ohcl_z_250_500) <- time(ohcl_z_500_1000) <- timetbl$date
+time(ohcl_z_0_5) <-time(ohcl_z_0_50) <- time(ohcl_z_50_100) <- time(ohcl_z_100_250) <- time(ohcl_z_250_500) <- time(ohcl_z_500_1000) <- timetbl$date
 
+writeRaster(ohcl_z_0_5,here('output','ocean_heat_content_0_5_ts.tif'),overwrite=T)
 writeRaster(ohcl_z_0_50,here('output','ocean_heat_content_0_50_ts.tif'),overwrite=T)
 writeRaster(ohcl_z_50_100,here('output','ocean_heat_content_50_100_ts.tif'),overwrite=T)
 writeRaster(ohcl_z_100_250,here('output','ocean_heat_content_100_250_ts.tif'),overwrite=T)

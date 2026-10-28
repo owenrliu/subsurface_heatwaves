@@ -1,0 +1,406 @@
+---
+title: "Building a Habitat Compression Index using MOM6"
+format: html
+editor: source
+embed-resources: true
+---
+
+## Introduction
+
+The [Habitat Compression Index](https://doi.org/10.1016/j.ecolind.2022.109520) was originally built from a data-assimilating product served by UCSC. We want to create a proxy or version of that index, but using the MOM6 ocean model data.
+
+We can compare it to a [downloaded version](https://cciea-esr.github.io/dashboard/#habitat-compression) of the original IEA-HCI.
+
+According to [Schroeder et al. 2022](https://doi.org/10.1016/j.ecolind.2022.109520), the calculation of the HCI consists of a two general steps:
+
+1. Calculate a mean, monthly SST climatology over a spatial region and historical period of interest, for all areas within 75 km of the coastline.
+
+2. For each month in the temperature data, calculate the proportion of all grid cells within 150 km of the coastline that are "cooler" than the monthly climatological value from Step 1. This value ranges from 0-1 and comprises the Habitat Compression Index, measuring the extent of cool water across the region.
+
+## Raster Masks
+
+We have monthly temperature data downloaded, but we need the 75km and 150km masks to crop the temperature data to our regions of interest.
+
+```{r,message=F,warning=F,include=F}
+library(tidyverse)
+library(terra)
+library(viridis)
+library(here)
+library(sf)
+library(rnaturalearth)
+library(ggrepel)
+
+theme_set(theme_minimal()+theme(panel.border = element_rect(color='black',fill=NA)))
+```
+
+Make a coastline, so we can measure distance from it.
+
+```{r,warning=F}
+# Make the coastline polygon for measuring distance
+coast <- ne_states(country='United States of America',returnclass = 'sf') |> 
+  filter(name %in% c('California','Oregon','Washington','Nevada',"Idaho"))
+coastcn <- ne_countries(country="Canada",scale='medium',returnclass='sf')
+coastmx <- ne_countries(country="Mexico",scale='medium',returnclass='sf')
+coast <- st_union(coast,coastcn) |> 
+  st_union(coastmx) |> 
+  summarise()
+
+# general bounding box
+minlat <- 30
+maxlat <- 49
+minlon <- 230
+maxlon <- 244
+
+bb <- st_bbox(c(xmin = minlon, xmax = maxlon, ymin = minlat, ymax = maxlat),
+              crs = st_crs(4326))
+coast <- st_crop(coast,bb)
+ggplot(coast)+geom_sf()
+```
+
+Measure distances from the raster (i.e., MOM6 temperature) data to the coastline. We make both a 75km and 150km mask.
+
+```{r}
+# example temperature raster
+rt <- rast(here('data','thetao','thetao_1993.nc'))
+rt <- rt[[1]]
+
+# rasterize the coastline!
+coast_r <- coast |> 
+  vect() |> 
+  rotate(left=F) |> 
+  project(rt) |> 
+  # cells on land = 1, else NA
+  rasterize(rt,field=1)
+
+# measure the distance of each cell to the continent
+dc <- distance(coast_r)/1e3
+
+# Make the raster masks by removing all cells >75 and >150km from coast, respectively
+mask75 <- clamp(dc,1,75,values=F)
+mask150 <- clamp(dc,1,150,values=F) 
+
+plot(mask75);plot(mask150)
+```
+
+## Make Climatology
+
+Now we build the climatology using the 75km mask. We do this by cropping each year (raster) of temperature data using both the 75km mask and a regional mask indicating the latitudinal ranges matching the Schroeder et al. regions.
+
+Because the domain of the downloaded MOM6 data do not extend as far south as HCI Region 4 (southern CA and Mexico), we exclude that region from our calculations (it could easily be added later).
+
+```{r}
+# Extents indicating latitudinal regions
+r3ext <- ext(minlon, maxlon, 35.5, 40) |> rast(vals=1)
+r2ext <- ext(minlon, maxlon, 40, 43.5) |> rast(vals=1)
+r1ext <- ext(minlon, maxlon, 43.5, 48) |> rast(vals=1)
+```
+
+Here's a function to do the cropping.
+
+```{r}
+# pull top depth layer, mask out all unneeded areas
+crop75 <- function(dat,region=r1ext){
+  # first layer (top depth, SST) of each month
+  r1 <- rast(lapply(dat, function(x) x[[1]]))
+  # mask to 75km
+  out <- r1 |> 
+    mask(mask75) |> 
+    crop(region)
+  time(out) <- time(r1)+months(0:11)
+  out
+}
+```
+
+The model only goes back to 1993, so we need to decide on a historical period over which to calculate the climatology. Somewhat arbitrarily I'll choose 1993-2010, which is the first 18 years of the data. This is the same end date at the original HCI base line, but a later start date (1993 vs. 1980).
+
+```{r}
+# all temperature data, one .nc file per year
+fl <- list.files(here('data','thetao'),full.names = T)
+flclim <- fl[1:18] # first 18 years, for the climatology
+```
+
+```{r}
+# For each file (with 1 year of data),
+# crop to the correct latitudinal region
+# and to cells <=75km from the coast
+
+# Region 1
+r1clim <- map(flclim,\(y){
+  d <- sds(y)
+  crop75(d,region=r1ext)
+}) |> rast() |> 
+  # now calculate a monthly climatology
+  tapp(index='months',fun='mean')
+
+# Region 2
+r2clim <- map(flclim,\(y){
+  d <- sds(y)
+  crop75(d,region=r2ext)
+}) |> rast() |> 
+  #climatology
+  tapp(index='months',fun='mean')
+
+# Region 3
+r3clim <- map(flclim,\(y){
+  d <- sds(y)
+  crop75(d,region=r3ext)
+}) |> rast() |> 
+  #climatology
+  tapp(index='months',fun='mean')
+```
+
+Thresholds for the HCI are rounded to the nearest half-degree, so let's do that here too. We calculate the mean temperature across all cells in the monthly climatology, then round to the nearest 0.5.
+
+```{r}
+# time series
+hci_clim_ts <- tibble(month=1:12,
+                      region1=global(r1clim,'mean',na.rm=T)[,1],
+                      region2=global(r2clim,'mean',na.rm=T)[,1],
+                      region3=global(r3clim,'mean',na.rm=T)[,1]) |> 
+  # round to nearest 0.5
+  mutate(across(region1:region3,~round(.x*2)/2))
+
+hci_clim_ts |>
+  pivot_longer(region1:region3,names_to="region",values_to='sstmean') |>
+  ggplot(aes(month,sstmean,color=region))+
+  scale_color_manual(values=viridis_pal(option="G",end=0.8)(3))+
+  geom_line(linewidth = 1.5)+
+  scale_x_continuous(breaks=1:12,expand=c(0,0))+
+  labs(x="Month",y="Mean SST, rounded")
+```
+
+## Make HCI
+
+Now that we have the climatological values for each region and month (comprising the HCI thresholds), we just have to compare sea surface temperatures within 150km to those values. The HCI counts up the total area of grid cells within 150km of shore that are cooler than the corresponding monthly climatological values.
+
+```{r}
+# pull top depth layer, mask out all unneeded areas
+crop150 <- function(dat,region=r1ext){
+  # pull top layer (top depth, i.e. SST) of each month
+  r1 <- rast(lapply(dat, function(x) x[[1]]))
+  # mask to 150km and to latitudinal region
+  out <- r1 |> 
+    mask(mask150) |> 
+    crop(region)
+  # set months correctly
+  nl <- nlyr(out)
+  ts <- time(r1)[1:nl]+months(0:(nl-1))
+  time(out) <- ts
+  out
+}
+```
+
+Use the `crop150` function to calculate total area of each region (for normalizing the HCI values)
+
+```{r}
+r1z <- crop150(rt,region=r1ext) |>
+  expanse(unit="km",transform=T) |>  
+  pull(area) |> unique()
+r2z <- crop150(rt,region=r2ext) |> 
+  expanse(unit="km",transform=T) |> 
+  pull(area) |> unique()
+r3z <- crop150(rt,region=r3ext) |> 
+  expanse(unit="km",transform=T) |> 
+  pull(area) |> unique()
+```
+
+Function to calculate HCI for a year of data, for a given region and a given climatology (monthly time series).
+
+```{r}
+# calculate HCI for a year, given a region and the key we just made above
+calc_hci_yr <- function(y,rgn_mask=r1ext,rgn_ts=hci_clim_ts$region1){
+  # load a year of data
+  dat <- sds(y)
+  # crop to the region of interest
+  out <- crop150(dat,region=rgn_mask) |> as.list()
+  rgn_ts <- rgn_ts[1:length(out)]
+  # calculate HCI by comparing each month to its climatological threshold
+  z<- map2_dbl(out,rgn_ts,\(k,j){
+    # is sst less than the threshold?
+    r <- ifel(k<j,1,NA)
+    # return the area of all non-NA cells
+    expanse(r,unit="km",transform=TRUE) |> pull(area)
+  })
+  z
+}
+```
+
+Now we can calculate the HCI time series for all regions. We also calculate annual, cumulative HCI by summing the HCI values along the year.
+
+```{r}
+# Region 1 full HCI timeseries
+r1HCI <- crossing(year=1993:2025,month=1:12,
+                  area_tot=r1z,region="Region 1") |> 
+  filter(!(year==2025&month>6)) |> 
+  # calc HCI for every year
+  mutate(hci_area= unlist(map(fl, calc_hci_yr,rgn_mask=r1ext,rgn_ts=hci_clim_ts$region1))) |> 
+  # normalize by total possible area
+  mutate(hci=hci_area/area_tot) |> 
+  mutate(date=make_date(year,month,day=16)) |>
+  # calculate cumulative HCI
+  group_by(year) |> arrange(month) |> 
+  mutate(chci=cumsum(hci)) |> 
+  ungroup()
+
+# Region 2 full HCI timeseries
+r2HCI <- crossing(year=1993:2025,month=1:12,
+                  area_tot=r2z,region="Region 2") |> 
+  filter(!(year==2025&month>6)) |> 
+  mutate(hci_area= unlist(map(fl, calc_hci_yr,rgn_mask=r2ext,rgn_ts=hci_clim_ts$region2))) |> 
+  mutate(hci=hci_area/area_tot) |> 
+  mutate(date=make_date(year,month,day=16)) |>
+  group_by(year) |> arrange(month) |> 
+  mutate(chci=cumsum(hci)) |> 
+  ungroup()
+
+# Region 3 full HCI timeseries
+r3HCI <- crossing(year=1993:2025,month=1:12,
+                  area_tot=r3z,region="Region 3") |> 
+  filter(!(year==2025&month>6)) |> 
+  mutate(hci_area= unlist(map(fl, calc_hci_yr,rgn_mask=r3ext,rgn_ts=hci_clim_ts$region3))) |> 
+  mutate(hci=hci_area/area_tot) |> 
+  mutate(date=make_date(year,month,day=16)) |>
+  group_by(year) |> arrange(month) |> 
+  mutate(chci=cumsum(hci)) |> 
+  ungroup()
+
+# All regions
+hci_all <- bind_rows(r1HCI,r2HCI) |> 
+  bind_rows(r3HCI)
+```
+
+## Plot HCI
+
+Full time series, by region.
+
+```{r}
+p_hci <- hci_all |> 
+  ggplot(aes(date,hci,color=region))+
+  scale_color_manual(values=viridis_pal(option="G",end=0.8)(3))+
+  facet_wrap(~region,nrow=3)+
+  geom_line(linewidth=1)
+p_hci
+```
+
+Cumulative HCI for select years. Compare to Schroeder et al. 2022, Fig. 3b.
+
+```{r,fig.width=4,fig.height=8}
+chci_sel <- hci_all |> 
+  filter(year %in% c(1998,1999,2005,2006,2013,2014)) |> 
+  mutate(group=case_when(
+    year %in% c(1998:1999) ~ 1,
+    year %in% c(2005:2006) ~ 2,
+    year %in% c(2013:2014) ~ 3
+  )) |> 
+  mutate(group=as.factor(group)) |> 
+  mutate(lab=str_sub(as.character(year), -2, -1))
+# last point of each line
+ends <- chci_sel |>
+  group_by(year,region) |>
+  slice_max(month, n = 1) |>
+  ungroup()
+
+p_chci <- ggplot()+
+  # scale_color_manual(values=viridis_pal()(3))+
+  facet_wrap(~region,nrow=3)+
+  geom_line(data=hci_all,aes(month,chci,group=year),linewidth=0.5,color='gray90')+
+  geom_line(data=chci_sel,aes(month,chci,group=year,color=group),linewidth=0.5)+
+  scale_color_manual(values=viridis_pal(option="C",end=0.8)(3))+
+  geom_text_repel(
+    data = ends, aes(month,chci,label = lab,color=group),
+    hjust = 0, nudge_x = 0.5, direction = "y",
+    xlim = c(max(12, Inf)), 
+    segment.colour = NA
+  ) +
+  scale_x_continuous(breaks=seq(1,12,by=1),expand=c(0,0))+
+  coord_cartesian(xlim=c(1,12),clip = "off") +
+  theme(legend.position = "none",
+        plot.margin = margin(r = 30))
+  
+p_chci
+```
+
+## Compare
+
+Compare MOM6-HCI to IEA-HCI. Let's test how similar the two time series are.
+
+```{r,message=F}
+# import the IEA version of the HCI
+hci_iea <- read_csv(here('data','hci','cciea_OC_HCI_712b_5843_9069.csv'),skip=2,
+                    col_names=c('time','hci','region','SEup','SElo')) |> 
+  mutate(month=month(time),year=year(time)) |> 
+  select(year,month,region,hci) |> 
+  distinct() |> 
+  group_by(region,year) |>
+  arrange(month) |>
+  mutate(chci=cumsum(hci)) |>
+  ungroup() |>
+  arrange(year,month)
+
+# align region names
+hci_iea <- hci_iea |> 
+  mutate(region=c("Region 1","Region 2","Region 3","Region 4")[match(region,unique(region))]) |> 
+  select(year,month,region,hci,chci) |> 
+  rename(IEAhci=hci,IEAchci=chci) |>
+  # remove Region 4 because we aren't comparing it here
+  filter(region != "Region 4")
+```
+
+Compare the two data sets for their overlapping year/months. Here, the original HCI is in blue, and the MOM6-HCI is in black.
+
+```{r}
+hci_join <- hci_all |> 
+  left_join(hci_iea,by=join_by(year,month,region))
+
+hci_join |> 
+  ggplot(aes(date))+
+  geom_line(aes(y=hci),color='black')+
+  geom_line(aes(y=IEAhci),color='blue')+
+  scale_x_date(expand=c(0,0))+
+  facet_wrap(~region,nrow=3)
+```
+
+Scatter plot. The dashed red line is the 1:1 line.
+
+```{r}
+hci_join |> 
+  ggplot(aes(IEAhci,hci))+
+  geom_point()+
+  geom_smooth(method='lm')+
+  geom_abline(slope=1,intercept=0,linetype=2,color='red')+
+  labs(x="IEA HCI",y="MOM6 HCI",title="Monthly HCI, IEA vs. MOM6")
+```
+
+The MOM6 HCI is somewhat lower than the IEA HCI at higher HCI values (best-fit line shallower than the red 1:1 line). This might reflect the differing baseline between the two: the original HCI uses a 1980-2010 baseline period, while MOM6 is only 1993-2010. Or, it could reflect differing thresholds (compare the climatology above to Schroeder et al. 2022, Fig. 2a).
+
+We could look at this by month
+
+```{r}
+hci_join |> 
+  ggplot(aes(IEAhci,hci))+
+  geom_point()+
+  facet_wrap(~month)+
+  geom_smooth(method='lm')+
+  geom_abline(slope=1,intercept=0,linetype=2,color='red')+
+  labs(x="IEA HCI",y="MOM6 HCI",title="Monthly HCI, IEA vs. MOM6")
+```
+We can see the same pattern, especially in the late summer and fall (July to Nov).
+
+Do the same with cumulative HCI.
+
+```{r,message=F}
+hci_join |> 
+  ggplot(aes(IEAchci,chci))+
+  geom_point()+
+  geom_smooth(method='lm')+
+  geom_abline(slope=1,intercept=0,linetype=2,color='red')+
+  labs(x="IEA cHCI",y="MOM6 cHCI",title="Cumulative HCI, IEA vs. MOM6")
+```
+
+Same pattern here; the MOM6-HCI tends smaller (i.e., warmer) at higher (i.e., cooler) values of HCI. In other words, in cool/good-habitat conditions, MOM6-HCI on average indicates a little less cool habitat than IEA-HCI.
+
+```{r}
+cor(hci_join$hci,hci_join$IEAhci)
+cor(hci_join$chci,hci_join$IEAchci)
+```
+The two datasets are very highly correlated in general, especially the cumulative HCI.
