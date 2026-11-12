@@ -748,7 +748,8 @@ p_hwfreq2 <- map(hwfreqmonth,\(x){
          fill='Years exceeding \nthreshold')
 })
 
-walk(p_hwfreq2, plot)
+# pg_hwfreq2 <- plot_grid(plotlist=p_hwfreq2,nrow=2)
+walk(p_hwfreq2,plot)
 ```
 
 We can define hotspots as anywhere that has repeatedly had heatwaves
@@ -857,6 +858,8 @@ p_hwsus1 <- ggplot()+
        fill='Number of Heatwaves')+
   theme(axis.text.x=element_blank())
 p_hwsus1
+
+ggsave(here('plots','spatial 4-month heatwaves.png'),p_hwsus1,w=10,h=7)
 ```
 
 ## Breakpoint Analysis
